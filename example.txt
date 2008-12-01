@@ -8,7 +8,7 @@ Metadata browsing:
 * GET http://localhost:8080/rest/metadata
 ** (gets all known types)
 
-Result:
+- Result:
 <?xml version="1.0" encoding="utf-8"?>
 <types>
         <type>WholeEnchilada</type>
@@ -19,7 +19,7 @@ Result:
 * GET http://localhost:8080/rest/metadata/Greeting
 ** (gets the Greeting type profile)
 
-Result:
+- Result:
 <?xml version="1.0" encoding="utf-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
     <xs:element name="Greeting">
@@ -37,7 +37,7 @@ Result:
 * GET http://localhost:8080/rest/metadata/DynoGreeting
 ** (gets the DynoGreeting type profile)
 
-Result:
+- Result:
 <?xml version="1.0" encoding="utf-8"?>
 <?xml version="1.0" encoding="utf-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -58,7 +58,7 @@ Result:
 * GET http://localhost:8080/rest/metadata/DynoGreeting
 ** (gets the WholeEnchilada type profile)
 
-Result:
+- Result:
 <?xml version="1.0" encoding="utf-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
     <xs:element name="WholeEnchilada">
@@ -100,9 +100,11 @@ Object Retrieval:
 =================
 
 * GET http://localhost:8080/rest/DynoGreeting
-** (gets all the DynoGreeting instances)
+** (gets the first N DynoGreeting instances)
+* GET http://localhost:8080/rest/DynoGreeting?offset=10
+** (gets the next N DynoGreeting instances, starting at offset 10)
 
-Result:
+- Result:
 <?xml version="1.0" encoding="utf-8"?>
 <list>
         <DynoGreeting>
@@ -131,7 +133,7 @@ Result:
 * GET http://localhost:8080/rest/WholeEnchilada/aglndWVzdGJvb2tyFAsSDldob2xlRW5jaGlsYWRhGAkM
 ** (gets a single WholeEnchilada instance)
 
-Result:
+- Result:
 <?xml version="1.0" encoding="utf-8"?>
 <WholeEnchilada>
         <key>aglndWVzdGJvb2tyFAsSDldob2xlRW5jaGlsYWRhGAkM</key>
@@ -179,8 +181,11 @@ Request:
     <taglist>foo,bar,bazz</taglist>
 </Greeting>
 
-Result:
+- Result (default):
 aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+
+- Result (with "?type=full" in url):
+Complete current version of the new Greeting instance.
 
 * POST http://localhost:8080/rest/Greeting/aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
 ** (partial update of existing Greeting instance)
@@ -191,8 +196,11 @@ Request:
     <content>some new content</content>
 </Greeting>
 
-Result:
+- Result (default):
 aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+
+- Result (with "?type=full" in url):
+Complete current version of the updated Greeting instance.
 
 * PUT http://localhost:8080/rest/Greeting/aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
 ** (complete replacement of existing Greeting instance)
@@ -205,10 +213,13 @@ Request:
     <date>2008-08-11T10:21:19.080553</date>
 </Greeting>
 
-Result:
+- Result (default):
 aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+
+- Result (with "?type=full" in url):
+Complete current version of the updated Greeting instance.
 
 * DELETE http://localhost:8080/rest/Greeting/aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
 ** (delete existing Greeting instance)
 
-Result: (200 okay)
+- Result: (200 okay)

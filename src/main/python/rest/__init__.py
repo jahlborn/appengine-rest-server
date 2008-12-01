@@ -557,10 +557,9 @@ class ModelHandler(object):
         """Returns a newly created model instance with the given properties (as a keyword dict)."""
         return self.model_type(**props)
 
-    def get_all(self):
-        """Returns all model instances of this type."""
-        # FIXME, for now just return first 50...
-        return self.model_type.all().fetch(50)
+    def get_all(self, limit, offset):
+        """Returns all model instances of this type.""" 
+        return self.model_type.all().fetch(limit, offset)
 
     def read_xml_value(self, model_el):
         """Returns a property dictionary for this Model from the given model element."""
@@ -634,14 +633,18 @@ class Dispatcher(webapp.RequestHandler):
         caching: True to enable caching, False to disable
 
         cache_time: Time in seconds for results to be cached
+
+        base_url: URL prefix expected on requests
+
+        fetch_page_size: number of instances to return per get-all call (note, AppEngine has a builtin limit of 1000)
         
     """
 
     caching = False
     cache_time = 300
-    
-
     base_url = ""
+    fetch_page_size = 50
+    
     model_handlers = {}
 
     def __init__(self):
@@ -765,7 +768,8 @@ class Dispatcher(webapp.RequestHandler):
                 model_key = path.pop(0)
                 models = model_handler.get(model_key)
             else:
-                models = model_handler.get_all()
+                fetch_offset = int(self.request.get("offset", "0"))
+                models = model_handler.get_all(self.fetch_page_size, fetch_offset)
 
             if models is None:
                 self.error(404)
@@ -828,8 +832,14 @@ class Dispatcher(webapp.RequestHandler):
             doc.unlink()
 
         model.put()
-        self.response.headers[CONTENT_TYPE_HEADER] = TEXT_CONTENT_TYPE
-        self.response.out.write(unicode(model.key()))
+
+        # note, we specifically look in the query string (don't try to parse the POST body)
+        if (self.request.query_string.find("type=full") >= 0):
+            self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
+            self.response.out.write(self.models_to_xml(model_name, model_handler, model))
+        else:
+            self.response.headers[CONTENT_TYPE_HEADER] = TEXT_CONTENT_TYPE
+            self.response.out.write(unicode(model.key()))
         
     def delete(self, *_):
         """Does a REST delete.
