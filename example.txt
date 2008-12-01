@@ -1,0 +1,214 @@
+Copyright 2008 Boomi, Inc.
+All rights reserved.
+
+
+Metadata browsing:
+==================
+
+* GET http://localhost:8080/rest/metadata
+** (gets all known types)
+
+Result:
+<?xml version="1.0" encoding="utf-8"?>
+<types>
+        <type>WholeEnchilada</type>
+        <type>DynoGreeting</type>
+        <type>Greeting</type>
+</types>
+
+* GET http://localhost:8080/rest/metadata/Greeting
+** (gets the Greeting type profile)
+
+Result:
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:element name="Greeting">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element maxOccurs="1" minOccurs="0" name="key" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="content" type="xs:string"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="date" type="xs:dateTime"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="author" type="xs:normalizedString"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>
+
+* GET http://localhost:8080/rest/metadata/DynoGreeting
+** (gets the DynoGreeting type profile)
+
+Result:
+<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:element name="DynoGreeting">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element maxOccurs="1" minOccurs="0" name="key" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="content" type="xs:string"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="date" type="xs:dateTime"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="author" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="taglist" type="xs:string"/>
+                <xs:any maxOccurs="unbounded" minOccurs="0" namespace="##any"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>
+
+* GET http://localhost:8080/rest/metadata/DynoGreeting
+** (gets the WholeEnchilada type profile)
+
+Result:
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:element name="WholeEnchilada">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element maxOccurs="1" minOccurs="0" name="key" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_rating" type="xs:integer"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_list">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element maxOccurs="0" minOccurs="0" name="item" type="xs:dateTime"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_text" type="xs:string"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_category" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_email" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_geopt" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_date" type="xs:date"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_key" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_float" type="xs:double"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_date_time" type="xs:dateTime"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_string" type="xs:string"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_time" type="xs:time"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_blob" type="xs:base64Binary"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_boolean" type="xs:boolean"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_link" type="xs:anyURI"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_integer" type="xs:long"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_postal_address" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_phone_number" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_im" type="xs:normalizedString"/>
+                <xs:element maxOccurs="1" minOccurs="0" name="some_user" type="xs:normalizedString"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>
+
+Object Retrieval:
+=================
+
+* GET http://localhost:8080/rest/DynoGreeting
+** (gets all the DynoGreeting instances)
+
+Result:
+<?xml version="1.0" encoding="utf-8"?>
+<list>
+        <DynoGreeting>
+                <key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA</key>
+                <content>some posted content</content>
+                <date>2008-08-05T00:21:19.080553</date>
+                <extra type="StringProperty">some other stuff</extra>
+        </DynoGreeting>
+        <DynoGreeting>
+                <key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgGDA</key>
+                <date>2008-08-06T16:16:52.323027</date>
+        </DynoGreeting>
+        <DynoGreeting>
+                <key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgHDA</key>
+                <content>replaced content</content>
+        </DynoGreeting>
+        <DynoGreeting>
+                <key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgIDA</key>
+                <content>replaced content</content>
+                <date>2008-08-05T00:21:19.080553</date>
+                <taglist>foo,bar,bazz</taglist>
+                <extra type="StringProperty">some other stuff</extra>
+        </DynoGreeting>
+</list>
+
+* GET http://localhost:8080/rest/WholeEnchilada/aglndWVzdGJvb2tyFAsSDldob2xlRW5jaGlsYWRhGAkM
+** (gets a single WholeEnchilada instance)
+
+Result:
+<?xml version="1.0" encoding="utf-8"?>
+<WholeEnchilada>
+        <key>aglndWVzdGJvb2tyFAsSDldob2xlRW5jaGlsYWRhGAkM</key>
+        <some_rating>42</some_rating>
+        <some_list>
+                <item>2008-08-05T00:21:19.080553</item>
+                <item>2008-08-06T00:21:19.080553</item>
+                <item>2008-08-07T00:21:19</item>
+                <item>2008-08-08T00:21:19.080553</item>
+        </some_list>
+        <some_text>laTda this is some very long text that i don't want to type</some_text>
+        <some_category>awesome</some_category>
+        <some_email>bob@example.com</some_email>
+        <some_geopt>4.3,-38.32</some_geopt>
+        <some_date>2008-08-11</some_date>
+        <some_key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgGDA</some_key>
+        <some_float>34345.345434</some_float>
+        <some_date_time>2008-08-05T00:21:19.080553</some_date_time>
+        <some_string>laTda</some_string>
+        <some_time>15:00:19.430000</some_time>
+        <some_blob>
+                asDFasdfAsdfAsfdeasfdasdfAsdFasdFasdfasdsdfasdf345345sadf435aSADFsafAS345aew
+        </some_blob>
+        <some_boolean>false</some_boolean>
+        <some_link>http://localhost:8080/rest/metadata/WholeEnchilada</some_link>
+        <some_integer>345908452309842432</some_integer>
+        <some_postal_address>123 Main St, Anytown, PA 12345</some_postal_address>
+        <some_phone_number>1-610-543-5432</some_phone_number>
+        <some_im>sip bob</some_im>
+        <some_user>bobster</some_user>
+</WholeEnchilada>
+
+Object Creation/Modification:
+=================
+
+* POST http://localhost:8080/rest/Greeting
+** (create new Greeting instance)
+
+Request:
+<?xml version="1.0" encoding="utf-8"?>
+<Greeting>
+    <author>bob@example.com</author>
+    <content>some posted content</content>
+    <date>2008-08-05T00:21:19.080553</date>
+    <taglist>foo,bar,bazz</taglist>
+</Greeting>
+
+Result:
+aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+
+* POST http://localhost:8080/rest/Greeting/aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+** (partial update of existing Greeting instance)
+
+Request:
+<?xml version="1.0" encoding="utf-8"?>
+<Greeting>
+    <content>some new content</content>
+</Greeting>
+
+Result:
+aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+
+* PUT http://localhost:8080/rest/Greeting/aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+** (complete replacement of existing Greeting instance)
+
+Request:
+<?xml version="1.0" encoding="utf-8"?>
+<Greeting>
+    <author>mike@example.com</author>
+    <content>some completely new content</content>
+    <date>2008-08-11T10:21:19.080553</date>
+</Greeting>
+
+Result:
+aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+
+* DELETE http://localhost:8080/rest/Greeting/aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
+** (delete existing Greeting instance)
+
+Result: (200 okay)
