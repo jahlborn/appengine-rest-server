@@ -952,9 +952,8 @@ class Dispatcher(webapp.RequestHandler):
             return
 
         try:
-            model = model_handler.get(model_key)
-            model.delete()
-        except db.KindError:
+            db.delete(db.Key(model_key))
+        except Exception:
             logging.warning("delete failed", exc_info=1)
             self.error(204)
 
