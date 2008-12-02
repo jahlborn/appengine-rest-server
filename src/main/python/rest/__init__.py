@@ -62,6 +62,8 @@ def get_type_name(value_type):
     
 METADATA_PATH = "metadata"
 
+MAX_FETCH_PAGE_SIZE = 1000
+
 XML_CLEANSE_PATTERN1 = re.compile(r"^(\d)")
 XML_CLEANSE_REPL1 = r"_\1"
 XML_CLEANSE_PATTERN2 = re.compile(r"[^a-zA-Z0-9]")
@@ -71,6 +73,7 @@ EMPTY_VALUE = object()
 
 KEY_PROPERTY_NAME = "key"
 KEY_PROPERTY_TYPE = "KeyProperty"
+KEY_QUERY_FIELD = "__key__"
 
 TYPES_EL_NAME = "types"
 TYPE_EL_NAME = "type"
@@ -102,13 +105,38 @@ XSD_ELEMENT_NAME = XSD_PREFIX + ":element"
 XSD_COMPLEXTYPE_NAME = XSD_PREFIX + ":complexType"
 XSD_SEQUENCE_NAME = XSD_PREFIX + ":sequence"
 XSD_ANY_NAME = XSD_PREFIX + ":any"
+XSD_ANNOTATION_NAME = XSD_PREFIX + ":annotation"
+XSD_APPINFO_NAME = XSD_PREFIX + ":appinfo"
+XSD_FILTER_PREFIX = "bm"
+XSD_ATTR_FILTER_XMLNS = "xmlns:" + XSD_FILTER_PREFIX
+XSD_FILTER_NS = "http://www.boomi.com/connector/annotation"
+XSD_FILTER_NAME = XSD_FILTER_PREFIX + ":filter"
 XSD_ATTR_MINOCCURS = "minOccurs"
 XSD_ATTR_MAXOCCURS = "maxOccurs"
 XSD_ATTR_NAMESPACE = "namespace"
+XSD_ATTR_PROCESSCONTENTS = "processContents"
+XSD_ATTR_NOFILTER = "ignore"
 XSD_ANY_NAMESPACE = "##any"
+XSD_LAX_CONTENTS = "lax"
 XSD_NO_MIN = "0"
 XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
+
+QUERY_OFFSET_PARAM = "offset"
+QUERY_TERM_PATTERN = re.compile(r"^(f.._)(.+)$")
+QUERY_PREFIX = "WHERE "
+QUERY_JOIN = " AND "
+QUERY_LIST_TYPE = "fin_"
+
+QUERY_EXPRS = {
+    "feq_" : "%s = :%d",
+    "flt_" : "%s < :%d",
+    "fgt_" : "%s > :%d",
+    "fle_" : "%s <= :%d",
+    "fge_" : "%s >= :%d",
+    "fne_" : "%s != :%d",
+    QUERY_LIST_TYPE : "%s IN :%d"
+    }
 
 DATA_TYPE_TO_PROPERTY_TYPE = {
     "basestring" : db.StringProperty,
@@ -197,6 +225,15 @@ def xsd_append_sequence(parent_el):
     seq_el = append_child(ctype_el, XSD_SEQUENCE_NAME)
     return seq_el
 
+def xsd_append_nofilter(parent_el):
+    """Returns Boomi XML Schema no filter annotation appended to the given parent element."""
+    child_el = append_child(parent_el, XSD_ANNOTATION_NAME)
+    child_el = append_child(child_el, XSD_APPINFO_NAME)
+    filter_el = append_child(child_el, XSD_FILTER_NAME)
+    filter_el.attributes[XSD_ATTR_FILTER_XMLNS] = XSD_FILTER_NS
+    filter_el.attributes[XSD_ATTR_NOFILTER] = TRUE_VALUE
+    return filter_el
+
 def xsd_append_element(parent_el, name, prop_type_name, min_occurs, max_occurs):
     """Returns an XML Schema element with the given attributes appended to the given parent element."""
     element_el = append_child(parent_el, XSD_ELEMENT_NAME)
@@ -238,6 +275,14 @@ class PropertyHandler(object):
         if(isinstance(property_type, (db.StringProperty, db.TextProperty))):
             self.strip_on_read = False
 
+    def get_query_field(self):
+        """Returns the field name which should be used to query this property."""
+        return self.property_name
+            
+    def can_query(self):
+        """Returns True if this property can be used as a query filter, False otherwise."""
+        return True
+            
     def get_data_type(self):
         """Returns the type of data this property accepts."""
         return self.property_type.data_type
@@ -275,25 +320,28 @@ class PropertyHandler(object):
             value = self.get_data_type()(value)
         return value
 
+    def value_for_query(self, value):
+        """Returns the value for this property from the given string value (may be None), for use in a query filter."""
+        return self.value_from_string(value)
+                
     def write_xml_value(self, parent_el, prop_xml_name, model):
         """Returns the property value from the given model instance converted to an xml element and appended to the
         given parent element."""
         value = self.get_value_as_string(model)
         if(value is EMPTY_VALUE):
-            logging.info("FOO not writing empty prop %s %s: %s", prop_xml_name, self, value)
             return None
-        logging.info("FOO writing prop %s %s: %s", prop_xml_name, self, value)
         return append_child(parent_el, prop_xml_name, value)
 
     def read_xml_value(self, props, prop_el):
         """Adds the value for this property to the given property dict converted from an xml element."""
         value = self.value_from_string(get_node_text(prop_el.childNodes, self.strip_on_read))
-        logging.info("FOO read prop %s %s: %s", self.property_name, self, value)
         props[self.property_name] = value
 
     def write_xsd_metadata(self, parent_el, prop_xml_name):
         """Returns the XML Schema element for this property type appended to the given parent element."""
         prop_el = xsd_append_element(parent_el, prop_xml_name, self.get_type_string(), XSD_NO_MIN, XSD_SINGLE_MAX)
+        if(not self.can_query()):
+            xsd_append_nofilter(prop_el)
         return prop_el
     
         
@@ -350,12 +398,27 @@ class BooleanHandler(PropertyHandler):
         return ((value == TRUE_VALUE) or (value == TRUE_NUMERIC_VALUE))
 
     
+class TextHandler(PropertyHandler):
+    """PropertyHandler for (large) text property instances."""
+    
+    def __init__(self, property_name, property_type):
+        super(TextHandler, self).__init__(property_name, property_type)
+
+    def can_query(self):
+        """Text properties may not be used in query filters."""
+        return False
+
+
 class BlobHandler(PropertyHandler):
     """PropertyHandler for blob property instances."""
     
     def __init__(self, property_name, property_type):
         super(BlobHandler, self).__init__(property_name, property_type)
 
+    def can_query(self):
+        """Blob properties may not be used in query filters."""
+        return False
+            
     def value_to_string(self, value):
         """Returns a blob value converted to a Base64 encoded string."""
         return base64.b64encode(str(value))
@@ -392,6 +455,10 @@ class KeyHandler(ReferenceHandler):
         """Returns True if the value is any value which evaluates to False, False otherwise."""
         return not value
 
+    def get_query_field(self):
+        """Returns the special key query field name '__key__'"""
+        return KEY_QUERY_FIELD
+                
     def get_value(self, model):
         """Returns the key of the given model instance if it has been saved, EMPTY_VALUE otherwise."""
         if(not model.is_saved()):
@@ -410,20 +477,25 @@ class ListHandler(PropertyHandler):
         super(ListHandler, self).__init__(property_name, property_type)
         self.sub_handler = get_property_handler(ITEM_EL_NAME,
                                                 DATA_TYPE_TO_PROPERTY_TYPE[get_type_name(property_type.item_type)]())
-        logging.info("FOO list sub handler %s for %s", self.sub_handler, property_type.item_type)
 
     def get_type_string(self):
         """Returns the type string 'ListProperty:' + <sub_type_string>."""
         return super(ListHandler, self).get_type_string() + DATA_TYPE_SEPARATOR + self.sub_handler.get_type_string()
 
+    def can_query(self):
+        """Can query is based on the list element type."""
+        return self.sub_handler.can_query()
+            
+    def value_for_query(self, value):
+        """Returns the value for a query filter based on the list element type."""
+        return self.sub_handler.value_from_string(value)
+                
     def write_xml_value(self, parent_el, prop_xml_name, model):
         """Returns a list element containing value elements for the property from the given model instance appended to
         the given parent element."""
         values = self.get_value(model)
         if(not values):
-            logging.info("FOO not writing empty prop list %s %s: %s", prop_xml_name, self, values)
             return None
-        logging.info("FOO writing prop list %s %s: %s", prop_xml_name, self, values)
         list_el = append_child(parent_el, prop_xml_name)
         for value in values:
             append_child(list_el, ITEM_EL_NAME, self.sub_handler.value_to_string(value))
@@ -437,7 +509,6 @@ class ListHandler(PropertyHandler):
             if((item_node.nodeType == item_node.ELEMENT_NODE) and (str(item_node.nodeName) == ITEM_EL_NAME)):
                 self.sub_handler.read_xml_value(sub_props, item_node)
                 values.append(sub_props.pop(ITEM_EL_NAME))
-        logging.info("FOO read prop list %s %s: %s", self.property_name, self, values)
         props[self.property_name] = values
 
     def write_xsd_metadata(self, parent_el, prop_xml_name):
@@ -483,7 +554,6 @@ class DynamicPropertyHandler(object):
             property_type = DATA_TYPE_TO_PROPERTY_TYPE[get_instance_type_name(value)]
             if(property_type is db.ListProperty):
                 prop_args.append(type(value[0]))
-            logging.info("FOO dyno prop %s for %s", self.property_name, property_type)
 
         if(isinstance(property_type, basestring)):
             if DATA_TYPE_SEPARATOR in property_type:
@@ -507,6 +577,8 @@ def get_property_handler(property_name, property_type):
         return ReferenceHandler(property_name, property_type)
     elif(isinstance(property_type, db.BlobProperty)):
         return BlobHandler(property_name, property_type)
+    elif(isinstance(property_type, db.TextProperty)):
+        return TextHandler(property_name, property_type)
     elif(isinstance(property_type, db.ListProperty)):
         return ListHandler(property_name, property_type)
     
@@ -541,7 +613,6 @@ class ModelHandler(object):
         prop_handlers = {}
         for prop_name, prop_type in self.model_type.properties().iteritems():
             prop_handler = get_property_handler(prop_name, prop_type)
-            logging.info("FOO adding handler %s %s", prop_name, prop_type)
             prop_handlers[convert_to_valid_xml_name(prop_handler.property_name)] = prop_handler
         return prop_handlers
             
@@ -557,26 +628,34 @@ class ModelHandler(object):
         """Returns a newly created model instance with the given properties (as a keyword dict)."""
         return self.model_type(**props)
 
-    def get_all(self, limit, offset):
-        """Returns all model instances of this type.""" 
-        return self.model_type.all().fetch(limit, offset)
-
+    def get_all(self, limit, offset, query_expr, query_params):
+        """Returns all model instances of this type."""
+        if(query_expr is None):
+            query = self.model_type.all()
+        else:
+            logging.info("FOO running query %s with params %s", query_expr, query_params)
+            query = self.model_type.gql(query_expr, *query_params)
+        return query.fetch(limit, offset)
+    
+    def get_property_handler(self, prop_name):
+        """Returns the relevant property handler for the given property name."""
+        prop_name = str(prop_name)
+        if(prop_name == KEY_PROPERTY_NAME):
+            return self.key_handler
+        elif(self.property_handlers.has_key(prop_name)):
+            return self.property_handlers[prop_name]
+        elif(self.is_dynamic()):
+            return DynamicPropertyHandler(prop_name)
+        else:
+            raise KeyError("Unknown property %s" % prop_name)
+    
     def read_xml_value(self, model_el):
         """Returns a property dictionary for this Model from the given model element."""
         props = {}
         for prop_node in model_el.childNodes:
             if(prop_node.nodeType != prop_node.ELEMENT_NODE):
                 continue
-            
-            prop_xml_name = str(prop_node.nodeName)
-            if(prop_xml_name == KEY_PROPERTY_NAME):
-                self.read_xml_property(prop_node, props, self.key_handler)
-            elif(self.property_handlers.has_key(prop_xml_name)):
-                self.read_xml_property(prop_node, props, self.property_handlers[prop_xml_name])
-            elif(self.is_dynamic()):
-                self.read_xml_property(prop_node, props, DynamicPropertyHandler(prop_xml_name))
-            else:
-                raise KeyError("Unknown property %s" % prop_xml_name)
+            self.get_property_handler(prop_node.nodeName).read_xml_value(props, prop_node)
 
         return props
 
@@ -584,6 +663,22 @@ class ModelHandler(object):
         """Reads a property from a property element."""
         prop_handler.read_xml_value(props, prop_el)
 
+    def read_query_values(self, prop_query_name, prop_query_values):
+        """Returns a tuple of (query_field, query_values) from the given query property name and value list."""
+        prop_handler = self.get_property_handler(prop_query_name)
+
+        if(not prop_handler.can_query()):
+            raise KeyError("Can not filter on property %s" % prop_query_name)
+
+        return (prop_handler.get_query_field(), [self.read_query_value(prop_handler, v) for v in prop_query_values])
+
+    def read_query_value(self, prop_handler, prop_query_value):
+        """Returns a query value from the given query property handler and value (may be a list)."""
+        if isinstance(prop_query_value, (types.ListType, types.TupleType)):
+            return [prop_handler.value_for_query(v) for v in prop_query_value]
+        else:
+            return prop_handler.value_for_query(prop_query_value)        
+        
     def write_xml_value(self, model_el, model):
         """Appends the properties of the given instance as xml elements to the given model element."""
         # write key property first
@@ -616,6 +711,7 @@ class ModelHandler(object):
         if(self.is_dynamic()):
             any_el = append_child(seq_el, XSD_ANY_NAME)
             any_el.attributes[XSD_ATTR_NAMESPACE] = XSD_ANY_NAMESPACE
+            any_el.attributes[XSD_ATTR_PROCESSCONTENTS] = XSD_LAX_CONTENTS
             any_el.attributes[XSD_ATTR_MINOCCURS] = XSD_NO_MIN
             any_el.attributes[XSD_ATTR_MAXOCCURS] = XSD_NO_MAX
 
@@ -666,7 +762,7 @@ class Dispatcher(webapp.RequestHandler):
           exclude_mode_types: optional list of Model types to be excluded from the REST handler.
           
         """
-        logging.info("FOO adding models from module %s", model_module)
+        logging.info("adding models from module %s", model_module)
         if(not exclude_model_types):
             exclude_model_types=[]
         if(isinstance(model_module, basestring)):
@@ -679,7 +775,6 @@ class Dispatcher(webapp.RequestHandler):
             if(isinstance(obj, type) and issubclass(obj, db.Model) and (obj not in exclude_model_types)):
                 model_name = module_name + get_type_name(obj)
                 cls.add_model(model_name, obj)
-        logging.info("FOO DONE adding models from module %s", model_module)
         
     def add_models(cls, models):
         """Adds the given models from the given dict to this request handler.  The key (with invalid
@@ -715,6 +810,7 @@ class Dispatcher(webapp.RequestHandler):
         if(not issubclass(model_type, db.Model)):
             raise ValueError("given model type %s is not a subclass of Model" % model_type)
         cls.model_handlers[xml_name] = ModelHandler(model_name, model_type)
+        logging.info("Added model %s with type %s", model_name, model_type)
             
     add_models_from_module = classmethod(add_models_from_module)
     add_models = classmethod(add_models)
@@ -747,9 +843,9 @@ class Dispatcher(webapp.RequestHandler):
     def get_impl(self):
         """Actual implementation of REST get.  Gets metadata (types, schemas), or actual Model instances.  
         
-        '/metadata/*'      -> See get_metadata() for details
-        '/<type>'          -> gets all Model instances of given type (200, 404)
-        '/<type>/<key>'    -> gets Model instance with given key (200, 404)
+        '/metadata/*'       -> See get_metadata() for details
+        '/<type>[?<query>]' -> gets all Model instances of given type, optionally querying (200, 404)
+        '/<type>/<key>'     -> gets Model instance with given key (200, 404)
         
         """
         
@@ -764,18 +860,18 @@ class Dispatcher(webapp.RequestHandler):
             if(not model_handler):
                 return
 
+            list_props = {}
             if (len(path) > 0):
                 model_key = path.pop(0)
                 models = model_handler.get(model_key)
             else:
-                fetch_offset = int(self.request.get("offset", "0"))
-                models = model_handler.get_all(self.fetch_page_size, fetch_offset)
+                models = self.get_all_impl(model_handler, list_props)
 
             if models is None:
                 self.error(404)
                 return
                 
-            out = self.models_to_xml(model_name, model_handler, models)
+            out = self.models_to_xml(model_name, model_handler, models, list_props)
             
         if out:
             self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
@@ -900,7 +996,58 @@ class Dispatcher(webapp.RequestHandler):
         finally:
             if doc:
                 doc.unlink()
+                
+    def get_all_impl(self, model_handler, list_props):
+        """Actual implementation of REST query.  Gets Model instances based on criteria specified in the query
+        parameters.
+        """
+        
+        fetch_offset = 0
+        query_expr = None
+        query_params = []
+        
+        for arg in self.request.arguments():
+            if(arg == QUERY_OFFSET_PARAM):
+                fetch_offset = int(self.request.get(QUERY_OFFSET_PARAM))
+                continue
+            
+            match = QUERY_TERM_PATTERN.match(arg)
+            if(match is None):
+                logging.warning("ignoring unexpected query param %s", arg)
+                continue
 
+            query_type = match.group(1)
+            query_field = match.group(2)
+            query_sub_expr = QUERY_EXPRS[query_type]
+
+            query_values = self.request.get_all(arg)
+            if(query_type == QUERY_LIST_TYPE):
+                query_values = [v.split(",") for v in query_values]
+
+            query_field, query_values = model_handler.read_query_values(query_field, query_values)
+
+            for value in query_values:
+                query_params.append(value)
+                query_sub_expr = query_sub_expr % (query_field, len(query_params))
+                if(not query_expr):
+                    query_expr = QUERY_PREFIX + query_sub_expr
+                else:
+                    query_expr += QUERY_JOIN + query_sub_expr
+
+        tmp_fetch_page_size = self.fetch_page_size
+        if(tmp_fetch_page_size < MAX_FETCH_PAGE_SIZE):
+            tmp_fetch_page_size += 1
+
+        models = model_handler.get_all(tmp_fetch_page_size, fetch_offset, query_expr, query_params)
+
+        next_fetch_offset = str(self.fetch_page_size + fetch_offset)
+        if((tmp_fetch_page_size > self.fetch_page_size) and (len(models) < tmp_fetch_page_size)):
+            next_fetch_offset = ""
+
+        list_props[QUERY_OFFSET_PARAM] = next_fetch_offset
+        
+        return models
+        
     def split_path(self):
         """Returns the request path split into non-empty components."""
         path = self.request.path
@@ -919,7 +1066,7 @@ class Dispatcher(webapp.RequestHandler):
             self.error(failure_code)
             return None
     
-    def models_to_xml(self, model_name, model_handler, models):
+    def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
         impl = minidom.getDOMImplementation()
         doc = None
@@ -927,6 +1074,9 @@ class Dispatcher(webapp.RequestHandler):
             if isinstance(models, (types.ListType, types.TupleType)):
                 doc = impl.createDocument(None, LIST_EL_NAME, None)
                 list_el = doc.documentElement
+                if((list_props is not None) and (list_props.has_key(QUERY_OFFSET_PARAM))):
+                    list_el.attributes[QUERY_OFFSET_PARAM] = list_props[QUERY_OFFSET_PARAM]
+                    
                 for model in models:
                     model_el = append_child(list_el, model_name)
                     model_handler.write_xml_value(model_el, model)
