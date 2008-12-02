@@ -102,11 +102,26 @@ Object Retrieval:
 * GET http://localhost:8080/rest/DynoGreeting
 ** (gets the first N DynoGreeting instances)
 * GET http://localhost:8080/rest/DynoGreeting?offset=10
-** (gets the next N DynoGreeting instances, starting at offset 10)
+** (gets the next N DynoGreeting instances, starting at offset 10.  Note
+   the returned list element contains an "offset" attribute.  If it has a
+   value, that is the next offset to use to retrieve more results.  If it is
+   empty, there are no more results).
+* GET http://localhost:8080/rest/DynoGreeting?offset=10&feq_date=2008-08-05T00:21:19.080553
+** (gets the next N DynoGreeting instances, starting at offset 10 with a date
+   property "greater than" 2008-08-05T00:21:19.080553.
+   Available operators:
+     - "feq_" -> "equal to"
+     - "flt_" -> "less than"
+     - "fgt_" -> "greater than"
+     - "fle_" -> "less than or equal to"
+     - "fge_" -> "greater than or equal to"
+     - "fne_" -> "not equal to"
+     - "fin_" -> "in <comma_separated_list>"
+   Multiple operators may be provided, they are AND'ed together).
 
 - Result:
 <?xml version="1.0" encoding="utf-8"?>
-<list>
+<list offset="50">
         <DynoGreeting>
                 <key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA</key>
                 <content>some posted content</content>
