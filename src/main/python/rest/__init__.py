@@ -716,7 +716,7 @@ class ModelHandler(object):
             any_el.attributes[XSD_ATTR_MAXOCCURS] = XSD_NO_MAX
 
 class Dispatcher(webapp.RequestHandler):
-    """RequestHandler which presents a REST based API for interacting with the datastore of a Google AppEngine
+    """RequestHandler which presents a REST based API for interacting with the datastore of a Google App Engine
     application.
 
     Integrating this handler with an existing application is designed to be as simple as possible.  The user merely
@@ -732,7 +732,7 @@ class Dispatcher(webapp.RequestHandler):
 
         base_url: URL prefix expected on requests
 
-        fetch_page_size: number of instances to return per get-all call (note, AppEngine has a builtin limit of 1000)
+        fetch_page_size: number of instances to return per get-all call (note, App Engine has a builtin limit of 1000)
         
     """
 

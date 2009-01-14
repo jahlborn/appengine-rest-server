@@ -1,7 +1,7 @@
 Copyright 2008 Boomi, Inc.
 All rights reserved.
 
-Basic REST server for Google AppEngine Applications using the builtin Datastore API.
+Basic REST server for Google App Engine Applications using the builtin Datastore API.
 
 ========
 
