@@ -370,7 +370,11 @@ class DateTimeHandler(PropertyHandler):
 
     def value_to_string(self, value):
         """Returns the datetime/date/time value converted to the relevant iso string value."""
-        return unicode(value.isoformat(*self.format_args))
+        value_str = value.isoformat(*self.format_args)
+        # undo python's idiotic formatting irregularity
+        if(self.allows_microseconds and not value.microsecond):
+            value_str += ".000000"
+        return unicode(value_str)
 
     def value_from_string(self, value):
         """Returns the datetime/date/time parsed from the relevant iso string value, or None if the string is empty."""
