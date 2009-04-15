@@ -937,6 +937,9 @@ class Dispatcher(webapp.RequestHandler):
         if (self.request.query_string.find("type=full") >= 0):
             self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
             self.response.out.write(self.models_to_xml(model_name, model_handler, model))
+        elif (self.request.query_string.find("type=xml") >= 0):
+            self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
+            self.response.out.write(self.keys_to_xml(model_handler, model))
         else:
             self.response.headers[CONTENT_TYPE_HEADER] = TEXT_CONTENT_TYPE
             self.response.out.write(unicode(model.key()))
@@ -1086,6 +1089,26 @@ class Dispatcher(webapp.RequestHandler):
             else:
                 doc = impl.createDocument(None, model_name, None)
                 model_handler.write_xml_value(doc.documentElement, models)
+
+            return doc.toxml(XML_ENCODING)
+        finally:
+            if doc:
+                doc.unlink()
+
+    def keys_to_xml(self, model_handler, models):
+        """Returns a string of xml of the keys of the given models (may be list or single instance)."""
+        impl = minidom.getDOMImplementation()
+        doc = None
+        try:
+            if isinstance(models, (types.ListType, types.TupleType)):
+                doc = impl.createDocument(None, LIST_EL_NAME, None)
+                list_el = doc.documentElement
+                    
+                for model in models:
+                    append_child(list_el, KEY_PROPERTY_NAME, model_handler.key_handler.get_value_as_string(model))
+            else:
+                doc = impl.createDocument(None, KEY_PROPERTY_NAME, None)
+                doc.documentElement.appendChild(doc.createTextNode(model_handler.key_handler.get_value_as_string(models)))
 
             return doc.toxml(XML_ENCODING)
         finally:
