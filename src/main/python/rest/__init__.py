@@ -95,6 +95,7 @@ TRUE_NUMERIC_VALUE = "1"
 CONTENT_TYPE_HEADER = "Content-Type"
 XML_CONTENT_TYPE = "application/xml"
 TEXT_CONTENT_TYPE = "text/plain"
+METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
 
 XML_ENCODING = "utf-8"
 XSD_PREFIX = "xs"
@@ -893,9 +894,28 @@ class Dispatcher(webapp.RequestHandler):
         model_key = path.pop(0)
 
         self.update_impl(model_name, model_key, True)
-        
+
     def post(self, *_):
-        """Does a REST put.
+        """Does a REST post, handles alternate HTTP methods specified via the 'X-HTTP-Method-Override' header"""
+
+        real_method = self.request.headers.get(METHOD_OVERRIDE_HEADER, None)
+        if real_method:
+            real_method = real_method.upper()
+            if real_method == "PUT":
+                self.put()
+            elif real_method == "DELETE":
+                self.delete()
+            elif real_method == "POST":
+                self.post_impl()
+            elif real_method == "GET":
+                self.get()
+            else:
+                self.error(405)
+        else:
+            self.post_impl()
+        
+    def post_impl(self, *_):
+        """Actual implementation of REST post.
         
         '/<type>'       -> creates new Model instance, returns key as plain text (200, 400, 404)
         '/<type>/<key>' -> partially updates Model instance, returns key as plain text (200, 400, 404)
