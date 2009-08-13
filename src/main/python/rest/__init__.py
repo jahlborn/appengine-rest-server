@@ -126,6 +126,7 @@ XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
 
 QUERY_OFFSET_PARAM = "offset"
+QUERY_PAGE_SIZE_PARAM = "page_size"
 QUERY_TERM_PATTERN = re.compile(r"^(f.._)(.+)$")
 QUERY_PREFIX = "WHERE "
 QUERY_JOIN = " AND "
@@ -1053,7 +1054,8 @@ class Dispatcher(webapp.RequestHandler):
         """Actual implementation of REST query.  Gets Model instances based on criteria specified in the query
         parameters.
         """
-        
+
+        cur_fetch_page_size = MAX_FETCH_PAGE_SIZE
         fetch_offset = 0
         query_expr = None
         query_params = []
@@ -1061,6 +1063,10 @@ class Dispatcher(webapp.RequestHandler):
         for arg in self.request.arguments():
             if(arg == QUERY_OFFSET_PARAM):
                 fetch_offset = int(self.request.get(QUERY_OFFSET_PARAM))
+                continue
+            
+            if(arg == QUERY_PAGE_SIZE_PARAM):
+                cur_fetch_page_size = int(self.request.get(QUERY_PAGE_SIZE_PARAM))
                 continue
             
             match = QUERY_TERM_PATTERN.match(arg)
@@ -1086,18 +1092,25 @@ class Dispatcher(webapp.RequestHandler):
                 else:
                     query_expr += QUERY_JOIN + query_sub_expr
 
-        tmp_fetch_page_size = self.fetch_page_size
+        cur_fetch_page_size = max(min(self.fetch_page_size, cur_fetch_page_size, MAX_FETCH_PAGE_SIZE), 1)
+
+        # if possible, attempt to fetch more than we really want so that we can determine if we have more results
+        tmp_fetch_page_size = cur_fetch_page_size
         if(tmp_fetch_page_size < MAX_FETCH_PAGE_SIZE):
             tmp_fetch_page_size += 1
 
         models = model_handler.get_all(tmp_fetch_page_size, fetch_offset, query_expr, query_params)
 
-        next_fetch_offset = str(self.fetch_page_size + fetch_offset)
-        if((tmp_fetch_page_size > self.fetch_page_size) and (len(models) < tmp_fetch_page_size)):
+        next_fetch_offset = str(cur_fetch_page_size + fetch_offset)
+        if((tmp_fetch_page_size > cur_fetch_page_size) and (len(models) < tmp_fetch_page_size)):
             next_fetch_offset = ""
 
         list_props[QUERY_OFFSET_PARAM] = next_fetch_offset
         
+        # trim list to the actual size we want
+        if(len(models) > cur_fetch_page_size):
+            models = models[0:cur_fetch_page_size]
+
         return models
         
     def split_path(self):
