@@ -49,6 +49,7 @@ import base64
 from google.appengine.api import memcache
 from google.appengine.ext import webapp
 from google.appengine.ext import db
+from django.utils import simplejson
 from xml.dom import minidom
 from datetime import datetime
 
@@ -95,6 +96,7 @@ TRUE_NUMERIC_VALUE = "1"
 CONTENT_TYPE_HEADER = "Content-Type"
 XML_CONTENT_TYPE = "application/xml"
 TEXT_CONTENT_TYPE = "text/plain"
+JSON_CONTENT_TYPE = "application/json"
 METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
 
 XML_ENCODING = "utf-8"
@@ -259,6 +261,37 @@ def get_node_text(node_list, do_strip=False):
     if do_strip:
         text = text.strip()
     return text
+
+def xml_to_json(xml_doc):
+    doc_el = xml_doc.documentElement
+    json_doc = {doc_el.nodeName : xml_node_to_json(doc_el)}
+
+    return simplejson.dumps(json_doc)
+
+def xml_node_to_json(xml_node):
+    if((len(xml_node.childNodes) == 1) and
+       (xml_node.childNodes[0].nodeType == xml_node.TEXT_NODE)):
+        return xml_node.childNodes[0].data
+    else:
+        json_node = {}
+        
+        for child_xml_node in xml_node.childNodes:
+            new_child_json_node = xml_node_to_json(child_xml_node)
+            cur_child_json_node = json_node.get(child_xml_node.nodeName, None)
+            if(cur_child_json_node is None):
+                cur_child_json_node = new_child_json_node
+            else:
+                # if we have more than one of the same type, turn the children into a list
+                if(not isinstance(cur_child_json_node, types.ListType)):
+                    cur_child_json_node = [cur_child_json_node]
+                cur_child_json_node.append(new_child_json_node)
+            json_node[child_xml_node.nodeName] = cur_child_json_node
+            
+        xml_node_attrs = xml_node.attributes
+        for attr_name in xml_node_attrs.keys():
+            json_node["@" + attr_name] = xml_node_attrs[attr_name].nodeValue
+
+        return json_node
 
 class PropertyHandler(object):
     """Base handler for Model properties which manages converting properties to and from xml.
@@ -638,7 +671,6 @@ class ModelHandler(object):
         if(query_expr is None):
             query = self.model_type.all()
         else:
-            logging.info("FOO running query %s with params %s", query_expr, query_params)
             query = self.model_type.gql(query_expr, *query_params)
         return query.fetch(limit, offset)
     
@@ -815,7 +847,7 @@ class Dispatcher(webapp.RequestHandler):
         if(not issubclass(model_type, db.Model)):
             raise ValueError("given model type %s is not a subclass of Model" % model_type)
         cls.model_handlers[xml_name] = ModelHandler(model_name, model_type)
-        logging.info("Added model %s with type %s", model_name, model_type)
+        logging.info("added model %s with type %s", model_name, model_type)
             
     add_models_from_module = classmethod(add_models_from_module)
     add_models = classmethod(add_models)
@@ -835,8 +867,7 @@ class Dispatcher(webapp.RequestHandler):
         if self.caching:
             out = memcache.get(self.request.url)
             if out:
-                self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
-                self.response.out.write(out)
+                self.write_output(out)
             else:
                 self.get_impl()
                 out = self.response.out.getvalue()
@@ -878,9 +909,7 @@ class Dispatcher(webapp.RequestHandler):
                 
             out = self.models_to_xml(model_name, model_handler, models, list_props)
             
-        if out:
-            self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
-            self.response.out.write(out)
+        self.write_output(out)
 
     def put(self, *_):
         """Does a REST put.
@@ -955,14 +984,11 @@ class Dispatcher(webapp.RequestHandler):
 
         # note, we specifically look in the query string (don't try to parse the POST body)
         if (self.request.query_string.find("type=full") >= 0):
-            self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
-            self.response.out.write(self.models_to_xml(model_name, model_handler, model))
+            self.write_output(self.models_to_xml(model_name, model_handler, model))
         elif (self.request.query_string.find("type=xml") >= 0):
-            self.response.headers[CONTENT_TYPE_HEADER] = XML_CONTENT_TYPE
-            self.response.out.write(self.keys_to_xml(model_handler, model))
+            self.write_output(self.keys_to_xml(model_handler, model))
         else:
-            self.response.headers[CONTENT_TYPE_HEADER] = TEXT_CONTENT_TYPE
-            self.response.out.write(unicode(model.key()))
+            self.write_output(unicode(model.key()))
         
     def delete(self, *_):
         """Does a REST delete.
@@ -1017,7 +1043,7 @@ class Dispatcher(webapp.RequestHandler):
                 for model_name in self.model_handlers.iterkeys():
                     append_child(types_el, TYPE_EL_NAME, model_name)
 
-            return doc.toxml(XML_ENCODING)
+            return self.doc_to_output(doc)
         
         finally:
             if doc:
@@ -1091,6 +1117,13 @@ class Dispatcher(webapp.RequestHandler):
             logging.error("invalid model name %s", model_name, exc_info=1)
             self.error(failure_code)
             return None
+
+    def doc_to_output(self, doc):
+
+        out_mime_type = self.request.accept.best_match([JSON_CONTENT_TYPE, XML_CONTENT_TYPE])
+        if(out_mime_type == JSON_CONTENT_TYPE):
+            return xml_to_json(doc)
+        return doc.toxml(XML_ENCODING)
     
     def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
@@ -1110,7 +1143,7 @@ class Dispatcher(webapp.RequestHandler):
                 doc = impl.createDocument(None, model_name, None)
                 model_handler.write_xml_value(doc.documentElement, models)
 
-            return doc.toxml(XML_ENCODING)
+            return self.doc_to_output(doc)
         finally:
             if doc:
                 doc.unlink()
@@ -1130,7 +1163,7 @@ class Dispatcher(webapp.RequestHandler):
                 doc = impl.createDocument(None, KEY_PROPERTY_NAME, None)
                 doc.documentElement.appendChild(doc.createTextNode(model_handler.key_handler.get_value_as_string(models)))
 
-            return doc.toxml(XML_ENCODING)
+            return self.doc_to_output(doc)
         finally:
             if doc:
                 doc.unlink()
@@ -1163,3 +1196,18 @@ class Dispatcher(webapp.RequestHandler):
             model = model_handler.create(props)
 
         return model
+
+    def write_output(self, out):
+        """Writes the output to the response."""
+        if out:
+            first_char = out[0]
+            content_type = TEXT_CONTENT_TYPE
+            if(first_char == '{'):
+                content_type = JSON_CONTENT_TYPE
+            elif(first_char == "<"):
+                content_type = XML_CONTENT_TYPE
+
+            self.response.headers[CONTENT_TYPE_HEADER] = content_type
+            self.response.out.write(out)
+            
+                
