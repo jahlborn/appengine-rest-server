@@ -127,9 +127,13 @@ XSD_NO_MAX = "unbounded"
 
 QUERY_OFFSET_PARAM = "offset"
 QUERY_PAGE_SIZE_PARAM = "page_size"
+QUERY_ORDERING_PARAM = "ordering"
 QUERY_TERM_PATTERN = re.compile(r"^(f.._)(.+)$")
 QUERY_PREFIX = "WHERE "
 QUERY_JOIN = " AND "
+QUERY_ORDERBY = " ORDER BY "
+QUERY_ORDER_ASC = " ASC"
+QUERY_ORDER_DESC = " DESC"
 QUERY_LIST_TYPE = "fin_"
 
 QUERY_EXPRS = {
@@ -667,12 +671,21 @@ class ModelHandler(object):
         """Returns a newly created model instance with the given properties (as a keyword dict)."""
         return self.model_type(**props)
 
-    def get_all(self, limit, offset, query_expr, query_params):
+    def get_all(self, limit, offset, ordering, query_expr, query_params):
         """Returns all model instances of this type."""
         if(query_expr is None):
             query = self.model_type.all()
+            if(ordering):
+                query.order(ordering)
         else:
+            if(ordering):
+                order_type = QUERY_ORDER_ASC
+                if(ordering[0] == "-"):
+                    ordering = ordering[1:]
+                    order_type = QUERY_ORDER_DESC
+                query_expr += QUERY_ORDERBY + ordering + order_type
             query = self.model_type.gql(query_expr, *query_params)
+                
         return query.fetch(limit, offset)
     
     def get_property_handler(self, prop_name):
@@ -1057,6 +1070,7 @@ class Dispatcher(webapp.RequestHandler):
 
         cur_fetch_page_size = MAX_FETCH_PAGE_SIZE
         fetch_offset = 0
+        ordering = None
         query_expr = None
         query_params = []
         
@@ -1067,6 +1081,10 @@ class Dispatcher(webapp.RequestHandler):
             
             if(arg == QUERY_PAGE_SIZE_PARAM):
                 cur_fetch_page_size = int(self.request.get(QUERY_PAGE_SIZE_PARAM))
+                continue
+            
+            if(arg == QUERY_ORDERING_PARAM):
+                ordering = self.request.get(QUERY_ORDERING_PARAM)
                 continue
             
             match = QUERY_TERM_PATTERN.match(arg)
@@ -1099,7 +1117,7 @@ class Dispatcher(webapp.RequestHandler):
         if(tmp_fetch_page_size < MAX_FETCH_PAGE_SIZE):
             tmp_fetch_page_size += 1
 
-        models = model_handler.get_all(tmp_fetch_page_size, fetch_offset, query_expr, query_params)
+        models = model_handler.get_all(tmp_fetch_page_size, fetch_offset, ordering, query_expr, query_params)
 
         next_fetch_offset = str(cur_fetch_page_size + fetch_offset)
         if((tmp_fetch_page_size > cur_fetch_page_size) and (len(models) < tmp_fetch_page_size)):
