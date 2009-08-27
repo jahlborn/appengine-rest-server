@@ -893,9 +893,10 @@ class Dispatcher(webapp.RequestHandler):
     def get_impl(self):
         """Actual implementation of REST get.  Gets metadata (types, schemas), or actual Model instances.  
         
-        '/metadata/*'       -> See get_metadata() for details
-        '/<type>[?<query>]' -> gets all Model instances of given type, optionally querying (200, 404)
-        '/<type>/<key>'     -> gets Model instance with given key (200, 404)
+        '/metadata/*'          -> See get_metadata() for details
+        '/<type>[?<query>]'    -> gets all Model instances of given type, optionally querying (200, 404)
+        '/<type>/<key>'        -> gets Model instance with given key (200, 404)
+        '/<type>/<key>/<prop>' -> gets a single property from the Model instance with given key (200, 404)
         
         """
         
@@ -914,6 +915,14 @@ class Dispatcher(webapp.RequestHandler):
             if (len(path) > 0):
                 model_key = path.pop(0)
                 models = model_handler.get(model_key)
+
+                if (len(path) > 0):
+                    prop_name = path.pop(0)
+                    prop_handler = model_handler.get_property_handler(prop_name)
+                    prop_value = prop_handler.get_value(models)
+                    self.write_property_output(prop_value)
+                    return
+                
             else:
                 models = self.get_all_impl(model_handler, list_props)
 
@@ -1240,5 +1249,14 @@ class Dispatcher(webapp.RequestHandler):
 
             self.response.headers[CONTENT_TYPE_HEADER] = content_type
             self.response.out.write(out)
+
+    def write_property_output(self, prop_value):
+        """Writes the output of a single property to the response."""
+
+        content_type = self.request.accept.best_matches()[0]
+        if not content_type:
+            content_type = TEXT_CONTENT_TYPE
+        self.response.headers[CONTENT_TYPE_HEADER] = content_type
+        self.response.out.write(prop_value)
             
                 
