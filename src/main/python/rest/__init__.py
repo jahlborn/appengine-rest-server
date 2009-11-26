@@ -97,7 +97,6 @@ CONTENT_TYPE_HEADER = "Content-Type"
 XML_CONTENT_TYPE = "application/xml"
 TEXT_CONTENT_TYPE = "text/plain"
 JSON_CONTENT_TYPE = "application/json"
-METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
 
 XML_ENCODING = "utf-8"
 XSD_PREFIX = "xs"
@@ -128,6 +127,7 @@ XSD_NO_MAX = "unbounded"
 QUERY_OFFSET_PARAM = "offset"
 QUERY_PAGE_SIZE_PARAM = "page_size"
 QUERY_ORDERING_PARAM = "ordering"
+QUERY_METHOD_PARAM = "_method"
 QUERY_TERM_PATTERN = re.compile(r"^(f.._)(.+)$")
 QUERY_PREFIX = "WHERE "
 QUERY_JOIN = " AND "
@@ -135,6 +135,9 @@ QUERY_ORDERBY = " ORDER BY "
 QUERY_ORDER_ASC = " ASC"
 QUERY_ORDER_DESC = " DESC"
 QUERY_LIST_TYPE = "fin_"
+
+METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
+METHOD_OVERRIDE_PATTERN = re.compile(r"[?&]" + QUERY_METHOD_PARAM + r"[=]([a-zA-Z]+)")
 
 QUERY_EXPRS = {
     "feq_" : "%s = :%d",
@@ -951,6 +954,10 @@ class Dispatcher(webapp.RequestHandler):
         """Does a REST post, handles alternate HTTP methods specified via the 'X-HTTP-Method-Override' header"""
 
         real_method = self.request.headers.get(METHOD_OVERRIDE_HEADER, None)
+        if(real_method is None):
+            match = METHOD_OVERRIDE_PATTERN.search(self.request.query_string)
+            if match:
+                real_method = match.group(1)
         if real_method:
             real_method = real_method.upper()
             if real_method == "PUT":
@@ -1094,6 +1101,10 @@ class Dispatcher(webapp.RequestHandler):
             
             if(arg == QUERY_ORDERING_PARAM):
                 ordering = self.request.get(QUERY_ORDERING_PARAM)
+                continue
+            
+            if(arg == QUERY_METHOD_PARAM):
+                # ignore override method param
                 continue
             
             match = QUERY_TERM_PATTERN.match(arg)
