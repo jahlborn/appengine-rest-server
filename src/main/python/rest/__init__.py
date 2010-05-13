@@ -71,6 +71,7 @@ XML_CLEANSE_PATTERN2 = re.compile(r"[^a-zA-Z0-9]")
 XML_CLEANSE_REPL2 = r"_"
 
 EMPTY_VALUE = object()
+MULTI_UPDATE_KEY = object()
 
 KEY_PROPERTY_NAME = "key"
 KEY_PROPERTY_TYPE = "KeyProperty"
@@ -994,8 +995,20 @@ class Dispatcher(webapp.RequestHandler):
             return
 
         doc = minidom.parse(self.request.body_file)
+
+        is_list = False
+        model_els = [(model_key, doc.documentElement)]
+        if(str(doc.documentElement.nodeName) == LIST_EL_NAME):
+            is_list = True
+            model_els = []
+            for node in doc.documentElement.childNodes:
+                if(node.nodeType == node.ELEMENT_NODE):
+                    model_els.append((MULTI_UPDATE_KEY, node))
+
+        models = []
         try:
-            model = self.model_from_xml(doc.documentElement, model_name, model_handler, model_key, is_replace)
+            for model_el_key, model_el in model_els:
+                models.append(self.model_from_xml(model_el, model_name, model_handler, model_el_key, is_replace))
         except Exception:
             logging.exception("failed parsing model")
             self.error(400)
@@ -1003,15 +1016,20 @@ class Dispatcher(webapp.RequestHandler):
         finally:
             doc.unlink()
 
-        model.put()
+        for model in models:
+            model.put()
 
+        # if input was not a list, convert single element models list back to single element
+        if(not is_list):
+            models = models[0]
+            
         # note, we specifically look in the query string (don't try to parse the POST body)
         if (self.request.query_string.find("type=full") >= 0):
-            self.write_output(self.models_to_xml(model_name, model_handler, model))
+            self.write_output(self.models_to_xml(model_name, model_handler, models))
         elif (self.request.query_string.find("type=xml") >= 0):
-            self.write_output(self.keys_to_xml(model_handler, model))
+            self.write_output(self.keys_to_xml(model_handler, models))
         else:
-            self.write_output(unicode(model.key()))
+            self.write_output(self.keys_to_text(models))
         
     def delete(self, *_):
         """Does a REST delete.
@@ -1208,15 +1226,27 @@ class Dispatcher(webapp.RequestHandler):
             if doc:
                 doc.unlink()
 
+    def keys_to_text(self, models):
+        """Returns a string of text of the keys of the given models (may be list or single instance)."""
+        if(not isinstance(models, (types.ListType, types.TupleType))):
+            models = [models]
+        return unicode(",".join([str(model.key()) for model in models]))
+                
     def model_from_xml(self, model_el, model_name, model_handler, key, is_replace):
         """Returns a model instance updated from the given model xml element."""
         if(model_name != str(model_el.nodeName)):
-            raise TypeError("wrong model name")
+            raise TypeError("wrong model name, found '%s', expected '%s'" % (model_el.nodeName, model_name))
 
         props = model_handler.read_xml_value(model_el)
 
         given_key = props.pop(KEY_PROPERTY_NAME, None)
 
+        if(key is MULTI_UPDATE_KEY):
+            if(given_key):
+                key = str(given_key)
+            else:
+                key = None
+        
         if(key):
             key = db.Key(key.strip())
             if(given_key and (given_key != key)):
