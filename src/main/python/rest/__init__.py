@@ -944,7 +944,9 @@ class Dispatcher(webapp.RequestHandler):
 
         path = self.split_path()
         model_name = path.pop(0)
-        model_key = path.pop(0)
+        model_key = None
+        if (len(path) > 0):
+            model_key = path.pop(0)
 
         self.update_impl(model_name, model_key, True)
 
