@@ -38,6 +38,11 @@ To use with an existing application:
     rest.Dispatcher.add_models({
       'foo' : FooModel,
       'bar' : BarModel})
+    # add specific models (with given names) and restrict the supported methods
+    rest.Dispatcher.add_models({
+      'foo' : (FooModel, ["GET"]),
+      'bar' : (BarModel, ["GET_METADATA", "GET", "POST", "PUT"],
+      'cache' : (CacheModel, ["GET", "DELETE"] })
 
 """
 
@@ -125,6 +130,9 @@ XSD_LAX_CONTENTS = "lax"
 XSD_NO_MIN = "0"
 XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
+
+ALL_MODEL_METHODS = ["GET", "POST", "PUT", "DELETE", "GET_METADATA"]
+READ_ONLY_MODEL_METHODS = ["GET", "GET_METADATA"]
 
 QUERY_OFFSET_PARAM = "offset"
 QUERY_PAGE_SIZE_PARAM = "page_size"
@@ -646,10 +654,11 @@ class Lazy(object):
 class ModelHandler(object):
     """Handler for a Model (or Expando) type which manages converting instances to and from xml."""
 
-    def __init__(self, model_name, model_type):
+    def __init__(self, model_name, model_type, model_methods):
         self.model_name = model_name
         self.model_type = model_type
         self.key_handler = KeyHandler()
+        self.model_methods = model_methods
 
     @Lazy
     def property_handlers(self):
@@ -798,7 +807,8 @@ class Dispatcher(webapp.RequestHandler):
     def __init__(self):
         super(Dispatcher, self).__init__()
 
-    def add_models_from_module(cls, model_module, use_module_name=False, exclude_model_types=None):
+    def add_models_from_module(cls, model_module, use_module_name=False, exclude_model_types=None,
+                               model_methods=ALL_MODEL_METHODS):
         """Adds all models from the given module to this request handler.  The name of the Model class (with invalid
         characters converted to the '_' character) will be used as the REST path for Models of that type (optionally
         including the module name).
@@ -811,10 +821,12 @@ class Dispatcher(webapp.RequestHandler):
           use_module_name: True to include the name of the module as part of the REST path for the Model, False to use
                            the Model name alone (this may be necessary if Models with conflicting names are used from
                            different modules).
-          exclude_mode_types: optional list of Model types to be excluded from the REST handler.
+          exclude_model_types: optional list of Model types to be excluded from the REST handler.
+          model_methods: optional methods supported for the given model (one or more of ["GET", "POST", "PUT",
+                         "DELETE", "GET_METADATA"]), defaults to all methods
           
         """
-        logging.info("adding models from module %s", model_module)
+        logging.info("adding models from module %s" % model_module)
         if(not exclude_model_types):
             exclude_model_types=[]
         if(isinstance(model_module, basestring)):
@@ -826,7 +838,7 @@ class Dispatcher(webapp.RequestHandler):
             obj = getattr(model_module, obj_name)
             if(isinstance(obj, type) and issubclass(obj, db.Model) and (obj not in exclude_model_types)):
                 model_name = module_name + get_type_name(obj)
-                cls.add_model(model_name, obj)
+                cls.add_model(model_name, obj, model_methods)
         
     def add_models(cls, models):
         """Adds the given models from the given dict to this request handler.  The key (with invalid
@@ -840,9 +852,16 @@ class Dispatcher(webapp.RequestHandler):
           
         """
         for model_name, model_type in models.iteritems():
-            cls.add_model(model_name, model_type)
+            model_methods = ALL_MODEL_METHODS
+            if type(model_type) in (types.TupleType, types.ListType):
+                # Assume we have format:
+                # {model_name : (ModelClass, [model_method_1, model_method_2])}
+                model_methods = model_type[1]
+                model_type = model_type[0]
+                
+            cls.add_model(model_name, model_type, model_methods)
 
-    def add_model(cls, model_name, model_type):
+    def add_model(cls, model_name, model_type, model_methods=ALL_MODEL_METHODS):
         """Adds the given model to this request handler.  The name (with invalid characters converted to the '_'
         character) will be used as the REST path for relevant Model value.
 
@@ -852,7 +871,8 @@ class Dispatcher(webapp.RequestHandler):
         Args:
           model_name: the REST path for the given model
           model_type: the Model class
-          
+          model_methods: optional methods supported for the given model (one or more of ["GET", "POST", "PUT",
+                         "DELETE", "GET_METADATA"]), defaults to all methods
         """
         xml_name = convert_to_valid_xml_name(model_name)
         if(xml_name == METADATA_PATH):
@@ -861,8 +881,8 @@ class Dispatcher(webapp.RequestHandler):
             raise KeyError("name %s already used" % model_name)
         if(not issubclass(model_type, db.Model)):
             raise ValueError("given model type %s is not a subclass of Model" % model_type)
-        cls.model_handlers[xml_name] = ModelHandler(model_name, model_type)
-        logging.info("added model %s with type %s", model_name, model_type)
+        cls.model_handlers[xml_name] = ModelHandler(model_name, model_type, model_methods)
+        logging.info("added model %s with type %s for methods %s" % (model_name, model_type, model_methods))
             
     add_models_from_module = classmethod(add_models_from_module)
     add_models = classmethod(add_models)
@@ -875,6 +895,7 @@ class Dispatcher(webapp.RequestHandler):
     # 204 -> noop (okay)
     # 400 -> bad req (bad data, invalid properties)
     # 404 -> not found (bad path)
+    # 405 -> method not allowed (method not supported by model)
     ##
 
     def get(self, *_):
@@ -887,7 +908,7 @@ class Dispatcher(webapp.RequestHandler):
                 self.get_impl()
                 out = self.response.out.getvalue()
                 if not memcache.set(self.request.url, out, self.cache_time):
-                    logging.warning("memcache set failed for %s", self.request.url)
+                    logging.warning("memcache set failed for %s" % self.request.url)
         else:
             self.get_impl()
 
@@ -908,7 +929,7 @@ class Dispatcher(webapp.RequestHandler):
             out = self.get_metadata(path)
             
         else:
-            model_handler = self.get_model_handler(model_name)
+            model_handler = self.get_model_handler(model_name, "GET")
             if(not model_handler):
                 return
 
@@ -948,7 +969,7 @@ class Dispatcher(webapp.RequestHandler):
         if (len(path) > 0):
             model_key = path.pop(0)
 
-        self.update_impl(model_name, model_key, True)
+        self.update_impl(model_name, model_key, "PUT", True)
 
     def post(self, *_):
         """Does a REST post, handles alternate HTTP methods specified via the 'X-HTTP-Method-Override' header"""
@@ -984,15 +1005,15 @@ class Dispatcher(webapp.RequestHandler):
         if (len(path) > 0):
             model_key = path.pop(0)
 
-        self.update_impl(model_name, model_key, False)
+        self.update_impl(model_name, model_key, "POST", False)
 
-    def update_impl(self, model_name, model_key, is_replace):
+    def update_impl(self, model_name, model_key, method_name, is_replace):
         """Actual implementation of all Model update methods.  Creates/updates/replaces Model instances as specified.
         Writes the key of the modified Model as a plain text result.
         
         """
         
-        model_handler = self.get_model_handler(model_name)
+        model_handler = self.get_model_handler(model_name, method_name)
         if(not model_handler):
             return
 
@@ -1043,7 +1064,7 @@ class Dispatcher(webapp.RequestHandler):
         model_name = path.pop(0)
         model_key = path.pop(0)
 
-        model_handler = self.get_model_handler(model_name, 204)
+        model_handler = self.get_model_handler(model_name, "DELETE", 204)
         if(not model_handler):
             return
 
@@ -1071,7 +1092,7 @@ class Dispatcher(webapp.RequestHandler):
         try:
             if model_name:
                 
-                model_handler = self.get_model_handler(model_name)
+                model_handler = self.get_model_handler(model_name, "GET_METADATA")
                 if(not model_handler):
                     return None
 
@@ -1118,7 +1139,7 @@ class Dispatcher(webapp.RequestHandler):
             
             match = QUERY_TERM_PATTERN.match(arg)
             if(match is None):
-                logging.warning("ignoring unexpected query param %s", arg)
+                logging.warning("ignoring unexpected query param %s" % arg)
                 continue
 
             query_type = match.group(1)
@@ -1168,15 +1189,21 @@ class Dispatcher(webapp.RequestHandler):
         path = [i for i in path.split('/') if i]
         return path
 
-    def get_model_handler(self, model_name, failure_code=404):
+    def get_model_handler(self, model_name, method_name, failure_code=404):
         """Returns the ModelHandler with the given name, or None (and sets the error code given) if there is no
         handler with the given name."""
         try:
-            return self.model_handlers[model_name]
+            model_handler = self.model_handlers[model_name]
         except KeyError:
-            logging.error("invalid model name %s", model_name, exc_info=1)
+            logging.error("invalid model name %s" % model_name, exc_info=1)
             self.error(failure_code)
             return None
+
+        if method_name not in model_handler.model_methods:
+            self.error(405)
+            return None
+
+        return model_handler
 
     def doc_to_output(self, doc):
 
