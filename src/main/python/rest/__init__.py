@@ -853,7 +853,7 @@ class Dispatcher(webapp.RequestHandler):
         """
         for model_name, model_type in models.iteritems():
             model_methods = ALL_MODEL_METHODS
-            if type(model_type) in (types.TupleType, types.ListType):
+            if isinstance(model_type, (types.ListType, types.TupleType)):
                 # Assume we have format:
                 # {model_name : (ModelClass, [model_method_1, model_method_2])}
                 model_methods = model_type[1]
