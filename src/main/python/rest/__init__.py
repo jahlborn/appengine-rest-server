@@ -840,7 +840,7 @@ class Dispatcher(webapp.RequestHandler):
                 model_name = module_name + get_type_name(obj)
                 cls.add_model(model_name, obj, model_methods)
         
-    def add_models(cls, models):
+    def add_models(cls, models, model_methods=ALL_MODEL_METHODS):
         """Adds the given models from the given dict to this request handler.  The key (with invalid
         characters converted to the '_' character) will be used as the REST path for relevant Model value.
 
@@ -848,11 +848,10 @@ class Dispatcher(webapp.RequestHandler):
         reserved.
 
         Args:
-          models: dict of REST path -> Model class
+          models: dict of REST path -> Model class (or a tuple of (Model class, [allowed methods]) )
           
         """
         for model_name, model_type in models.iteritems():
-            model_methods = ALL_MODEL_METHODS
             if isinstance(model_type, (types.ListType, types.TupleType)):
                 # Assume we have format:
                 # {model_name : (ModelClass, [model_method_1, model_method_2])}
