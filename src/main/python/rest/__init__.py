@@ -40,9 +40,9 @@ To use with an existing application:
       'bar' : BarModel})
     # add specific models (with given names) and restrict the supported methods
     rest.Dispatcher.add_models({
-      'foo' : (FooModel, ["GET"]),
-      'bar' : (BarModel, ["GET_METADATA", "GET", "POST", "PUT"],
-      'cache' : (CacheModel, ["GET", "DELETE"] })
+      'foo' : (FooModel, ['GET']),
+      'bar' : (BarModel, ['GET_METADATA', 'GET', 'POST', 'PUT'],
+      'cache' : (CacheModel, ['GET', 'DELETE'] })
 
 """
 
@@ -822,8 +822,8 @@ class Dispatcher(webapp.RequestHandler):
                            the Model name alone (this may be necessary if Models with conflicting names are used from
                            different modules).
           exclude_model_types: optional list of Model types to be excluded from the REST handler.
-          model_methods: optional methods supported for the given model (one or more of ["GET", "POST", "PUT",
-                         "DELETE", "GET_METADATA"]), defaults to all methods
+          model_methods: optional methods supported for the given model (one or more of ['GET', 'POST', 'PUT',
+                         'DELETE', 'GET_METADATA']), defaults to all methods
           
         """
         logging.info("adding models from module %s" % model_module)
@@ -871,8 +871,8 @@ class Dispatcher(webapp.RequestHandler):
         Args:
           model_name: the REST path for the given model
           model_type: the Model class
-          model_methods: optional methods supported for the given model (one or more of ["GET", "POST", "PUT",
-                         "DELETE", "GET_METADATA"]), defaults to all methods
+          model_methods: optional methods supported for the given model (one or more of ['GET', 'POST', 'PUT',
+                         'DELETE', 'GET_METADATA']), defaults to all methods
         """
         xml_name = convert_to_valid_xml_name(model_name)
         if(xml_name == METADATA_PATH):
