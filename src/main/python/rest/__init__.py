@@ -793,7 +793,10 @@ class Authenticator(object):
 
     def authenticate(self, dispatcher):
         """Authenticates the current request for the given dispatcher.  Returns if authentication succeeds, otherwise
-        raises a DispatcherException with an appropriate error code (see the Dispatcher.forbidden() method).
+        raises a DispatcherException with an appropriate error code, e.g. 403 (see the Dispatcher.forbidden() method).
+        Note, the 401 code is handled specially by the Dispatcher (the response is not modified) so that the
+        Authenticator can issue an HTTP authentication challenge by configuring the response appropriately and then
+        throwing a DispatcherException with the 401 code.
 
         Args:
           dispatcher: the dispatcher for the request to be authenticated
@@ -1463,7 +1466,9 @@ class Dispatcher(webapp.RequestHandler):
             
     def handle_exception(self, exception, debug_mode):
         if(isinstance(exception, DispatcherException)):
-            self.error(exception.error_code)
+            # if 401, assume thrower has configured the response appropriately for an auth challenge
+            if(exception.error_code != 401):
+                self.error(exception.error_code)
         else:
             super(Dispatcher, self).handle_exception(exception, debug_mode)
 
