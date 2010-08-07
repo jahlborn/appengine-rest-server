@@ -40,10 +40,14 @@ To use with an existing application:
       'bar' : BarModel})
     # add specific models (with given names) and restrict the supported methods
     rest.Dispatcher.add_models({
-      'foo' : (FooModel, ['GET']),
+      'foo' : (FooModel, rest.READ_ONLY_MODEL_METHODS),
       'bar' : (BarModel, ['GET_METADATA', 'GET', 'POST', 'PUT'],
       'cache' : (CacheModel, ['GET', 'DELETE'] })
 
+    # use custom authentication/authorization
+    rest.Dispatcher.authenticator = MyAuthenticator()
+    rest.Dispatcher.authorizer = MyAuthorizer()
+    
 """
 
 import types
@@ -776,6 +780,128 @@ class ModelHandler(object):
             any_el.attributes[XSD_ATTR_MINOCCURS] = XSD_NO_MIN
             any_el.attributes[XSD_ATTR_MAXOCCURS] = XSD_NO_MAX
 
+
+class DispatcherException(Exception):
+    """Exception which contains an http error code to be returned from the current request."""
+    def __init__(self, error_code):
+        super(DispatcherException, self).__init__()
+        self.error_code = error_code
+
+
+class Authenticator(object):
+    """Handles authentication of REST API calls."""
+
+    def authenticate(self, dispatcher):
+        """Authenticates the current request for the given dispatcher.  Returns if authentication succeeds, otherwise
+        raises a DispatcherException with an appropriate error code (see the Dispatcher.forbidden() method).
+
+        Args:
+          dispatcher: the dispatcher for the request to be authenticated
+        """
+        pass
+
+
+class Authorizer(object):
+    """Handles authorization for REST API calls.  In general, authorization failures in can_* methods should raise a
+    DispatcherException with an appropriate error code while filter_* methods should simply remove any unauthorized
+    data."""
+
+    def can_read_metadata(self, dispatcher, model_name):
+        """Returns if the metadata of the model with the given model_name is visible to the user associated with the
+        current request for the given dispatcher, otherwise raises a DispatcherException with an appropriate error
+        code (see the Dispatcher.forbidden() method).
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          model_name: the name of the model whose metadata has been requested
+        """
+        pass
+
+    def filter_read_metadata(self, dispatcher, model_names):
+        """Returns the model_names from the given list whose metadata is visible to the user associated with the
+        current request for the given dispatcher.
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          model_names: the names of models whose metadata has been requested
+        """
+        return model_names
+
+    def can_read(self, dispatcher, model):
+        """Returns if the given model can be read by the user associated with the current request for the given
+        dispatcher, otherwise raises a DispatcherException with an appropriate error code (see the
+        Dispatcher.forbidden() method).
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          model: the model to be read
+        """
+        pass
+
+    def filter_read(self, dispatcher, models):
+        """Returns the models from the given list which can be read by the user associated with the current request
+        for the given dispatcher.  Note, the check_query() method can also be used to filter the models retrieved from
+        a query.
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          models: the models to be read
+        """
+        return models
+
+    def check_query(self, dispatcher, query_expr, query_params):
+        """Verifies/modifies the given query so that it is valid for the user associated with the current request for
+        the given dispatcher.  For instance, if every model has an 'owner' field, an implementation of this method
+        could be:
+
+            query_params.append(authenticated_user)
+            if(not query_expr):
+                query_expr = 'WHERE owner = :%d' % (len(query_params))
+            else:
+                query_expr += ' AND owner = :%d' % (len(query_params))
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          query_expr: currently defined query expression, like 'WHERE foo = :1 AND blah = :2', or None for 'query all'
+          query_params: the list of positional query parameters associated with the given query_expr
+        """
+        return query_expr
+
+    def can_write(self, dispatcher, model, is_replace):
+        """Returns if the given model can be modified by the user associated with the current request for the given
+        dispatcher, otherwise raises a DispatcherException with an appropriate error code (see the
+        Dispatcher.forbidden() method).
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          model: the model to be modified
+          is_replace: True if this is a full update (PUT), False otherwise (POST)
+        """
+        pass
+
+    def filter_write(self, dispatcher, models, is_replace):
+        """Returns the models from the given list which can be modified by the user associated with the current
+        request for the given dispatcher.
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          models: the models to be modified
+          is_replace: True if this is a full update (PUT), False otherwise (POST)
+        """
+        return models
+
+    def can_delete(self, dispatcher, model_key):
+        """Returns if the given model can be deleted by the user associated with the current request for the given
+        dispatcher, otherwise raises a DispatcherException with an appropriate error code (see the
+        Dispatcher.forbidden() method).
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          model_key: the key of the model to be deleted
+        """
+        pass
+
+
 class Dispatcher(webapp.RequestHandler):
     """RequestHandler which presents a REST based API for interacting with the datastore of a Google App Engine
     application.
@@ -801,6 +927,8 @@ class Dispatcher(webapp.RequestHandler):
     cache_time = 300
     base_url = ""
     fetch_page_size = 50
+    authenticator = Authenticator()
+    authorizer = Authorizer()
     
     model_handlers = {}
 
@@ -899,6 +1027,9 @@ class Dispatcher(webapp.RequestHandler):
 
     def get(self, *_):
         """Does a REST get, optionally using memcache to cache results.  See get_impl() for more details."""
+
+        self.authenticator.authenticate(self)
+        
         if self.caching:
             out = memcache.get(self.request.url)
             if out:
@@ -920,7 +1051,7 @@ class Dispatcher(webapp.RequestHandler):
         '/<type>/<key>/<prop>' -> gets a single property from the Model instance with given key (200, 404)
         
         """
-        
+
         path = self.split_path()
         model_name = path.pop(0)
 
@@ -929,13 +1060,13 @@ class Dispatcher(webapp.RequestHandler):
             
         else:
             model_handler = self.get_model_handler(model_name, "GET")
-            if(not model_handler):
-                return
 
             list_props = {}
             if (len(path) > 0):
                 model_key = path.pop(0)
                 models = model_handler.get(model_key)
+
+                self.authorizer.can_read(self, models)
 
                 if (len(path) > 0):
                     prop_name = path.pop(0)
@@ -962,6 +1093,8 @@ class Dispatcher(webapp.RequestHandler):
         
         """
 
+        self.authenticator.authenticate(self)
+        
         path = self.split_path()
         model_name = path.pop(0)
         model_key = None
@@ -973,6 +1106,8 @@ class Dispatcher(webapp.RequestHandler):
     def post(self, *_):
         """Does a REST post, handles alternate HTTP methods specified via the 'X-HTTP-Method-Override' header"""
 
+        self.authenticator.authenticate(self)
+        
         real_method = self.request.headers.get(METHOD_OVERRIDE_HEADER, None)
         if real_method:
             real_method = real_method.upper()
@@ -1013,8 +1148,6 @@ class Dispatcher(webapp.RequestHandler):
         """
         
         model_handler = self.get_model_handler(model_name, method_name)
-        if(not model_handler):
-            return
 
         doc = minidom.parse(self.request.body_file)
 
@@ -1038,6 +1171,11 @@ class Dispatcher(webapp.RequestHandler):
         finally:
             doc.unlink()
 
+        if is_list:
+            models = self.authorizer.filter_write(self, models, is_replace)
+        elif (len(models) > 0):
+            self.authorizer.can_write(self, models[0], is_replace)
+
         for model in models:
             model.put()
 
@@ -1059,16 +1197,19 @@ class Dispatcher(webapp.RequestHandler):
         '/<type>/<key>' -> delete Model instance w/ given key (200, 204)
         
         """
+
+        self.authenticator.authenticate(self)
+        
         path = self.split_path()
         model_name = path.pop(0)
         model_key = path.pop(0)
 
         model_handler = self.get_model_handler(model_name, "DELETE", 204)
-        if(not model_handler):
-            return
 
         try:
-            db.delete(db.Key(model_key))
+            model_key = db.Key(model_key)
+            self.authorizer.can_delete(self, model_key)
+            db.delete(model_key)
         except Exception:
             logging.warning("delete failed", exc_info=1)
             self.error(204)
@@ -1092,8 +1233,8 @@ class Dispatcher(webapp.RequestHandler):
             if model_name:
                 
                 model_handler = self.get_model_handler(model_name, "GET_METADATA")
-                if(not model_handler):
-                    return None
+
+                self.authorizer.can_read_metadata(self, model_name)
 
                 doc = impl.createDocument(XSD_NS, XSD_SCHEMA_NAME, None)
                 doc.documentElement.attributes[XSD_ATTR_XMLNS] = XSD_NS
@@ -1103,7 +1244,8 @@ class Dispatcher(webapp.RequestHandler):
 
                 doc = impl.createDocument(None, TYPES_EL_NAME, None)
                 types_el = doc.documentElement
-                for model_name in self.model_handlers.iterkeys():
+                model_names = self.authorizer.filter_read_metadata(self, list(self.model_handlers.iterkeys()))
+                for model_name in model_names:
                     append_child(types_el, TYPE_EL_NAME, model_name)
 
             return self.doc_to_output(doc)
@@ -1166,6 +1308,8 @@ class Dispatcher(webapp.RequestHandler):
         if(tmp_fetch_page_size < MAX_FETCH_PAGE_SIZE):
             tmp_fetch_page_size += 1
 
+        query_expr = self.authorizer.check_query(self, query_expr, query_params)
+
         models = model_handler.get_all(tmp_fetch_page_size, fetch_offset, ordering, query_expr, query_params)
 
         next_fetch_offset = str(cur_fetch_page_size + fetch_offset)
@@ -1177,6 +1321,8 @@ class Dispatcher(webapp.RequestHandler):
         # trim list to the actual size we want
         if(len(models) > cur_fetch_page_size):
             models = models[0:cur_fetch_page_size]
+
+        models = self.authorizer.filter_read(self, models)
 
         return models
         
@@ -1195,12 +1341,10 @@ class Dispatcher(webapp.RequestHandler):
             model_handler = self.model_handlers[model_name]
         except KeyError:
             logging.error("invalid model name %s" % model_name, exc_info=1)
-            self.error(failure_code)
-            return None
+            raise DispatcherException(failure_code)
 
         if method_name not in model_handler.model_methods:
-            self.error(405)
-            return None
+            raise DispatcherException(405)
 
         return model_handler
 
@@ -1317,4 +1461,12 @@ class Dispatcher(webapp.RequestHandler):
         self.response.headers[CONTENT_TYPE_HEADER] = content_type
         self.response.out.write(prop_value)
             
-                
+    def handle_exception(self, exception, debug_mode):
+        if(isinstance(exception, DispatcherException)):
+            self.error(exception.error_code)
+        else:
+            super(Dispatcher, self).handle_exception(exception, debug_mode)
+
+    def forbidden(self):
+        raise DispatcherException(403)
+        

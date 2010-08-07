@@ -31,4 +31,13 @@ rest.Dispatcher.add_models_from_module(my_model_module)
 rest.Dispatcher.add_models({
   "foo": FooModel,
   "bar": BarModel})
+# add specific models (with given names) and restrict the supported methods
+rest.Dispatcher.add_models({
+  "foo" : (FooModel, rest.READ_ONLY_MODEL_METHODS),
+  "bar" : (BarModel, ["GET_METADATA", "GET", "POST", "PUT"],
+  "cache" : (CacheModel, ["GET", "DELETE"] })
+
+# use custom authentication/authorization
+rest.Dispatcher.authenticator = MyAuthenticator()
+rest.Dispatcher.authorizer = MyAuthorizer()
 
