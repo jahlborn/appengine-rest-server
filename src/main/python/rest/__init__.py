@@ -782,8 +782,9 @@ class ModelHandler(object):
 
 
 class DispatcherException(Exception):
-    """Exception which contains an http error code to be returned from the current request."""
-    def __init__(self, error_code):
+    """Exception which contains an http error code to be returned from the current request.  If error_code is None,
+    the thrower is assumed to have configured the response appropriately before throwing."""
+    def __init__(self, error_code=None):
         super(DispatcherException, self).__init__()
         self.error_code = error_code
 
@@ -793,10 +794,10 @@ class Authenticator(object):
 
     def authenticate(self, dispatcher):
         """Authenticates the current request for the given dispatcher.  Returns if authentication succeeds, otherwise
-        raises a DispatcherException with an appropriate error code, e.g. 403 (see the Dispatcher.forbidden() method).
-        Note, the 401 code is handled specially by the Dispatcher (the response is not modified) so that the
-        Authenticator can issue an HTTP authentication challenge by configuring the response appropriately and then
-        throwing a DispatcherException with the 401 code.
+        raises a DispatcherException with an appropriate error code, e.g. 403 or 404 (see the Dispatcher.forbidden()
+        and Dispatcher.not_found() methods).  Note, an error_code of None is handled specially by the Dispatcher (the
+        response is not modified) so that, for example, the Authenticator could issue an HTTP authentication challenge
+        by configuring the response appropriately and then throwing a DispatcherException with no code.
 
         Args:
           dispatcher: the dispatcher for the request to be authenticated
@@ -1082,8 +1083,7 @@ class Dispatcher(webapp.RequestHandler):
                 models = self.get_all_impl(model_handler, list_props)
 
             if models is None:
-                self.error(404)
-                return
+                self.not_found()
                 
             out = self.models_to_xml(model_name, model_handler, models, list_props)
             
@@ -1169,8 +1169,7 @@ class Dispatcher(webapp.RequestHandler):
                 models.append(self.model_from_xml(model_el, model_name, model_handler, model_el_key, is_replace))
         except Exception:
             logging.exception("failed parsing model")
-            self.error(400)
-            return
+            raise DispatcherException(400)
         finally:
             doc.unlink()
 
@@ -1466,12 +1465,17 @@ class Dispatcher(webapp.RequestHandler):
             
     def handle_exception(self, exception, debug_mode):
         if(isinstance(exception, DispatcherException)):
-            # if 401, assume thrower has configured the response appropriately for an auth challenge
-            if(exception.error_code != 401):
+            # if None, assume thrower has configured the response appropriately
+            if(exception.error_code is not None):
                 self.error(exception.error_code)
         else:
             super(Dispatcher, self).handle_exception(exception, debug_mode)
 
     def forbidden(self):
+        """Convenience method which raises a DispatcherException with a 403 error code."""
         raise DispatcherException(403)
+        
+    def not_found(self):
+        """Convenience method which raises a DispatcherException with a 404 error code."""
+        raise DispatcherException(404)
         
