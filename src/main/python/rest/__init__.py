@@ -863,6 +863,7 @@ class Authorizer(object):
                 query_expr = 'WHERE owner = :%d' % (len(query_params))
             else:
                 query_expr += ' AND owner = :%d' % (len(query_params))
+            return query_expr
 
         Args:
           dispatcher: the dispatcher for the request to be authorized
@@ -894,13 +895,14 @@ class Authorizer(object):
         """
         return models
 
-    def can_delete(self, dispatcher, model_key):
+    def can_delete(self, dispatcher, model_type, model_key):
         """Returns if the given model can be deleted by the user associated with the current request for the given
         dispatcher, otherwise raises a DispatcherException with an appropriate error code (see the
         Dispatcher.forbidden() method).
 
         Args:
           dispatcher: the dispatcher for the request to be authorized
+          model_type: the class of the model to be be deleted
           model_key: the key of the model to be deleted
         """
         pass
@@ -1210,7 +1212,7 @@ class Dispatcher(webapp.RequestHandler):
 
         try:
             model_key = db.Key(model_key)
-            self.authorizer.can_delete(self, model_key)
+            self.authorizer.can_delete(self, model_handler.model_type, model_key)
             db.delete(model_key)
         except Exception:
             logging.warning("delete failed", exc_info=1)
