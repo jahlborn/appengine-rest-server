@@ -311,6 +311,31 @@ def xml_node_to_json(xml_node):
 
         return json_node
 
+def json_to_xml(json_doc):
+    json_node = simplejson.load(json_doc)
+
+    impl = minidom.getDOMImplementation()
+    doc_el_name = json_node.keys()[0]
+    xml_doc = impl.createDocument(None, doc_el_name, None)
+    json_node_to_xml(xml_doc.documentElement, json_node[doc_el_name])
+    return xml_doc
+
+def json_node_to_xml(xml_node, json_node):
+    doc = xml_node.ownerDocument
+    if(isinstance(json_node, basestring)):
+        xml_node.appendChild(doc.createTextNode(json_node))
+    else:
+        for json_node_name, json_node_value in json_node.iteritems():
+            if(json_node_name[0] == "@"):
+                xml_node.attributes[json_node_name[1:]] = json_node_value
+            else:
+                if(not isinstance(json_node_value, types.ListType)):
+                    json_node_value = [json_node_value]
+                for json_node_list_value in json_node_value:
+                    child_node = append_child(xml_node, json_node_name)
+                    json_node_to_xml(child_node, json_node_list_value)
+                    
+
 class PropertyHandler(object):
     """Base handler for Model properties which manages converting properties to and from xml.
 
@@ -1154,7 +1179,7 @@ class Dispatcher(webapp.RequestHandler):
         
         model_handler = self.get_model_handler(model_name, method_name)
 
-        doc = minidom.parse(self.request.body_file)
+        doc = self.input_to_xml()
 
         is_list = False
         model_els = [(model_key, doc.documentElement)]
@@ -1358,6 +1383,13 @@ class Dispatcher(webapp.RequestHandler):
         if(out_mime_type == JSON_CONTENT_TYPE):
             return xml_to_json(doc)
         return doc.toxml(XML_ENCODING)
+
+    def input_to_xml(self):
+
+        content_type = self.request.headers.get(CONTENT_TYPE_HEADER, None)
+        if(content_type == JSON_CONTENT_TYPE):
+            return json_to_xml(self.request.body_file)
+        return minidom.parse(self.request.body_file)
     
     def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
