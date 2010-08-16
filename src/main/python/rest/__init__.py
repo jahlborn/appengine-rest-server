@@ -135,8 +135,8 @@ XSD_NO_MIN = "0"
 XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
 
-ALL_MODEL_METHODS = ["GET", "POST", "PUT", "DELETE", "GET_METADATA"]
-READ_ONLY_MODEL_METHODS = ["GET", "GET_METADATA"]
+ALL_MODEL_METHODS = frozenset(["GET", "POST", "PUT", "DELETE", "GET_METADATA"])
+READ_ONLY_MODEL_METHODS = frozenset(["GET", "GET_METADATA"])
 
 QUERY_OFFSET_PARAM = "offset"
 QUERY_PAGE_SIZE_PARAM = "page_size"
@@ -422,6 +422,15 @@ class PropertyHandler(object):
         if(not self.can_query()):
             xsd_append_nofilter(prop_el)
         return prop_el
+
+    def value_to_response(self, dispatcher, value):
+        """Writes the output of a single property to the dispatcher's response."""
+
+        content_type = dispatcher.request.accept.best_matches()[0]
+        if not content_type:
+            content_type = TEXT_CONTENT_TYPE
+        dispatcher.response.headers[CONTENT_TYPE_HEADER] = content_type
+        dispatcher.response.out.write(value)
     
         
 class DateTimeHandler(PropertyHandler):
@@ -1124,7 +1133,7 @@ class Dispatcher(webapp.RequestHandler):
                     prop_name = path.pop(0)
                     prop_handler = model_handler.get_property_handler(prop_name)
                     prop_value = prop_handler.get_value(models)
-                    self.write_property_output(prop_value)
+                    prop_handler.value_to_response(self, prop_value)
                     return
                 
             else:
@@ -1509,15 +1518,6 @@ class Dispatcher(webapp.RequestHandler):
             self.response.headers[CONTENT_TYPE_HEADER] = content_type
             self.response.out.write(out)
 
-    def write_property_output(self, prop_value):
-        """Writes the output of a single property to the response."""
-
-        content_type = self.request.accept.best_matches()[0]
-        if not content_type:
-            content_type = TEXT_CONTENT_TYPE
-        self.response.headers[CONTENT_TYPE_HEADER] = content_type
-        self.response.out.write(prop_value)
-            
     def handle_exception(self, exception, debug_mode):
         if(isinstance(exception, DispatcherException)):
             # if None, assume thrower has configured the response appropriately
