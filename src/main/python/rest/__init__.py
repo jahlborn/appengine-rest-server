@@ -172,6 +172,7 @@ DATA_TYPE_TO_PROPERTY_TYPE = {
     "date" : db.DateProperty,
     "time" : db.TimeProperty,
     "Blob" : db.BlobProperty,
+    "ByteString" : db.ByteStringProperty,
     "Text" : db.TextProperty,
     "User" : db.UserProperty,
     "Category" : db.CategoryProperty,
@@ -196,6 +197,7 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.DateProperty) : XSD_PREFIX + ":date",
     get_type_name(db.TimeProperty) : XSD_PREFIX + ":time",
     get_type_name(db.BlobProperty) : XSD_PREFIX + ":base64Binary",
+    get_type_name(db.ByteStringProperty) : XSD_PREFIX + ":base64Binary",
     get_type_name(db.TextProperty) : XSD_PREFIX + ":string",
     get_type_name(db.UserProperty) : XSD_PREFIX + ":normalizedString",
     get_type_name(db.CategoryProperty) : XSD_PREFIX + ":normalizedString",
@@ -511,6 +513,23 @@ class BlobHandler(PropertyHandler):
         return base64.b64decode(value)
 
 
+class ByteStringHandler(PropertyHandler):
+    """PropertyHandler for ByteString property instances."""
+
+    def __init__(self, property_name, property_type):
+        super(ByteStringHandler, self).__init__(property_name, property_type)
+            
+    def value_to_string(self, value):
+        """Returns a ByteString value converted to a Base64 encoded string."""
+        return base64.b64encode(str(value))
+
+    def value_from_string(self, value):
+        """Returns a ByteString value parsed from a Base64 encoded string, or None if the string is empty."""
+        if(not value):
+            return None
+        return db.ByteString(base64.b64decode(value))
+    
+
 class ReferenceHandler(PropertyHandler):
     """PropertyHandler for reference property instances."""
     
@@ -656,6 +675,8 @@ def get_property_handler(property_name, property_type):
         return BooleanHandler(property_name, property_type)
     elif(isinstance(property_type, db.ReferenceProperty)):
         return ReferenceHandler(property_name, property_type)
+    elif(isinstance(property_type, db.ByteStringProperty)):
+        return ByteStringHandler(property_name, property_type)
     elif(isinstance(property_type, db.BlobProperty)):
         return BlobHandler(property_name, property_type)
     elif(isinstance(property_type, db.TextProperty)):
