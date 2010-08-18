@@ -115,6 +115,9 @@ METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
 RANGE_HEADER = "Range"
 BINARY_CONTENT_TYPE = "application/octet-stream"
 
+JSON_TEXT_KEY = "#text"
+JSON_ATTR_PREFIX = "@"
+
 XML_ENCODING = "utf-8"
 XSD_PREFIX = "xs"
 XSD_ATTR_XMLNS = "xmlns:" + XSD_PREFIX
@@ -166,6 +169,8 @@ QUERY_TYPE_XML = "xml"
 QUERY_BLOBINFO_PARAM = "blobinfo"
 BOOL_TRUE_STR = "true"
 BOOL_FALSE_STR = "false"
+
+QUERY_CALLBACK_PARAM = "callback"
 
 QUERY_EXPRS = {
     "feq_" : "%s = :%d",
@@ -321,7 +326,15 @@ def xml_to_json(xml_doc):
 def xml_node_to_json(xml_node):
     if((len(xml_node.childNodes) == 1) and
        (xml_node.childNodes[0].nodeType == xml_node.TEXT_NODE)):
-        return xml_node.childNodes[0].data
+        if(len(xml_node.attributes) == 0):
+            return xml_node.childNodes[0].data
+        else:
+            json_node = {}
+            json_node[JSON_TEXT_KEY] = xml_node.childNodes[0].data            
+            xml_node_attrs = xml_node.attributes
+            for attr_name in xml_node_attrs.keys():
+                json_node[JSON_ATTR_PREFIX + attr_name] = xml_node_attrs[attr_name].nodeValue
+            return json_node
     else:
         json_node = {}
         
@@ -339,7 +352,7 @@ def xml_node_to_json(xml_node):
             
         xml_node_attrs = xml_node.attributes
         for attr_name in xml_node_attrs.keys():
-            json_node["@" + attr_name] = xml_node_attrs[attr_name].nodeValue
+            json_node[JSON_ATTR_PREFIX + attr_name] = xml_node_attrs[attr_name].nodeValue
 
         return json_node
 
@@ -358,8 +371,10 @@ def json_node_to_xml(xml_node, json_node):
         xml_node.appendChild(doc.createTextNode(json_node))
     else:
         for json_node_name, json_node_value in json_node.iteritems():
-            if(json_node_name[0] == "@"):
+            if(json_node_name[0] == JSON_ATTR_PREFIX):
                 xml_node.attributes[json_node_name[1:]] = json_node_value
+            elif(json_node_name == JSON_TEXT_KEY):
+                xml_node.appendChild(doc.createTextNode(json_node_value))
             else:
                 if(not isinstance(json_node_value, types.ListType)):
                     json_node_value = [json_node_value]
@@ -455,10 +470,7 @@ class PropertyHandler(object):
 
     def value_to_response(self, dispatcher, value, path):
         """Writes the output of a single property to the dispatcher's response."""
-        content_type = dispatcher.request.accept.best_matches()[0]
-        if not content_type:
-            content_type = TEXT_CONTENT_TYPE
-        dispatcher.response.headers[CONTENT_TYPE_HEADER] = content_type
+        dispatcher.set_response_content_type(TEXT_CONTENT_TYPE);
         dispatcher.response.out.write(value)
     
         
@@ -625,6 +637,7 @@ class BlobReferenceHandler(ReferenceHandler):
         for type_el in schema_el.childNodes:
             if(type_el.attributes[NAME_ATTR_NAME].nodeValue == BLOBINFO_TYPE_NAME):
                 has_blob_info = True
+                break
 
         # we need to add the BlobInfo type def
         if not has_blob_info:
@@ -638,27 +651,13 @@ class BlobReferenceHandler(ReferenceHandler):
         return prop_el
 
     def value_to_response(self, dispatcher, value, path):
-        """Writes the output a blobkey property to the dispatcher's response."""
+        """Writes the output a blobkey property (or the blob contents) to the dispatcher's response."""
         
         if((len(path) > 0) and (path.pop(0) == CONTENT_PATH)):
-            dispatcher.response.clear()
-            content_type = None
             blob_info = None
             if value:
                 blob_info = blobstore.BlobInfo.get(value)
-            if blob_info:
-                # return actual blob
-                range_header = dispatcher.request.headers.get(RANGE_HEADER, None)
-                if range_header is not None:
-                    dispatcher.response.headers[blobstore.BLOB_RANGE_HEADER] = range_header
-                dispatcher.response.headers[blobstore.BLOB_KEY_HEADER] = str(value)
-                content_type = blob_info.content_type
-                
-            if not content_type:
-                content_type = dispatcher.request.accept.best_matches()[0]
-            if not content_type:
-                content_type = BINARY_CONTENT_TYPE
-            dispatcher.response.headers[CONTENT_TYPE_HEADER] = content_type
+            dispatcher.serve_blob(blob_info)
             return
         
         # just return blobinfo key
@@ -1462,6 +1461,10 @@ class Dispatcher(webapp.RequestHandler):
             if(arg == QUERY_ORDERING_PARAM):
                 ordering = self.request.get(QUERY_ORDERING_PARAM)
                 continue
+
+            if((arg == QUERY_CALLBACK_PARAM) or (arg == QUERY_BLOBINFO_PARAM)):
+                #ignore
+                continue
             
             match = QUERY_TERM_PATTERN.match(arg)
             if(match is None):
@@ -1637,14 +1640,38 @@ class Dispatcher(webapp.RequestHandler):
         if out:
             first_char = out[0]
             content_type = TEXT_CONTENT_TYPE
+            out_suffix = None
             if(first_char == '{'):
                 content_type = JSON_CONTENT_TYPE
+                # check for json callback
+                callback = self.get_query_param(QUERY_CALLBACK_PARAM, None)
+                if callback:
+                    self.response.out.write(callback)
+                    self.response.out.write("(")
+                    out_suffix = ");"
             elif(first_char == "<"):
                 content_type = XML_CONTENT_TYPE
 
             self.response.headers[CONTENT_TYPE_HEADER] = content_type
             self.response.out.write(out)
+            if out_suffix:
+                self.response.out.write(out_suffix)
 
+    def serve_blob(self, blob_info):
+        """Serves a BlobInfo response."""
+        self.response.clear()
+
+        content_type_preferred = None
+        if blob_info:
+            # return actual blob
+            range_header = self.request.headers.get(RANGE_HEADER, None)
+            if range_header is not None:
+                self.response.headers[blobstore.BLOB_RANGE_HEADER] = range_header
+            self.response.headers[blobstore.BLOB_KEY_HEADER] = str(blob_info.key())
+            content_type_preferred = blob_info.content_type
+            
+        self.set_response_content_type(BINARY_CONTENT_TYPE, content_type_preferred)
+                
     def handle_exception(self, exception, debug_mode):
         if(isinstance(exception, DispatcherException)):
             # if None, assume thrower has configured the response appropriately
@@ -1665,6 +1692,14 @@ class Dispatcher(webapp.RequestHandler):
             return default
         return value[0]
 
+    def set_response_content_type(self, content_type_default, content_type_preferred=None):
+        content_type = content_type_preferred
+        if((not content_type) or (content_type.find("*") >= 0)):
+            content_type = self.request.accept.best_matches()[0]
+            if((not content_type) or (content_type.find("*") >= 0)):
+                content_type = content_type_default
+        self.response.headers[CONTENT_TYPE_HEADER] = content_type
+    
     def forbidden(self):
         """Convenience method which raises a DispatcherException with a 403 error code."""
         raise DispatcherException(403)
