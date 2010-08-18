@@ -54,10 +54,12 @@ import types
 import logging
 import re
 import base64
+import urlparse
 
 from google.appengine.api import memcache
 from google.appengine.ext import webapp
 from google.appengine.ext import db
+from google.appengine.ext import blobstore
 from django.utils import simplejson
 from xml.dom import minidom
 from datetime import datetime
@@ -71,6 +73,7 @@ def get_type_name(value_type):
     return value_type.__name__
     
 METADATA_PATH = "metadata"
+CONTENT_PATH = "content"
 
 MAX_FETCH_PAGE_SIZE = 1000
 
@@ -91,6 +94,7 @@ TYPE_EL_NAME = "type"
 LIST_EL_NAME = "list"
 TYPE_ATTR_NAME = "type"
 NAME_ATTR_NAME = "name"
+BASE_ATTR_NAME = "base"
 ITEM_EL_NAME = "item"
 
 DATA_TYPE_SEPARATOR = ":"
@@ -108,6 +112,8 @@ XML_CONTENT_TYPE = "application/xml"
 TEXT_CONTENT_TYPE = "text/plain"
 JSON_CONTENT_TYPE = "application/json"
 METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
+RANGE_HEADER = "Range"
+BINARY_CONTENT_TYPE = "application/octet-stream"
 
 XML_ENCODING = "utf-8"
 XSD_PREFIX = "xs"
@@ -115,7 +121,10 @@ XSD_ATTR_XMLNS = "xmlns:" + XSD_PREFIX
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 XSD_SCHEMA_NAME = XSD_PREFIX + ":schema"
 XSD_ELEMENT_NAME = XSD_PREFIX + ":element"
+XSD_ATTRIBUTE_NAME = XSD_PREFIX + ":attribute"
 XSD_COMPLEXTYPE_NAME = XSD_PREFIX + ":complexType"
+XSD_SIMPLECONTENT_NAME = XSD_PREFIX + ":simpleContent"
+XSD_EXTENSION_NAME = XSD_PREFIX + ":extension"
 XSD_SEQUENCE_NAME = XSD_PREFIX + ":sequence"
 XSD_ANY_NAME = XSD_PREFIX + ":any"
 XSD_ANNOTATION_NAME = XSD_PREFIX + ":annotation"
@@ -134,6 +143,7 @@ XSD_LAX_CONTENTS = "lax"
 XSD_NO_MIN = "0"
 XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
+BLOBINFO_TYPE_NAME = "BlobInfo"
 
 ALL_MODEL_METHODS = frozenset(["GET", "POST", "PUT", "DELETE", "GET_METADATA"])
 READ_ONLY_MODEL_METHODS = frozenset(["GET", "GET_METADATA"])
@@ -148,6 +158,14 @@ QUERY_ORDERBY = " ORDER BY "
 QUERY_ORDER_ASC = " ASC"
 QUERY_ORDER_DESC = " DESC"
 QUERY_LIST_TYPE = "fin_"
+
+QUERY_TYPE_PARAM = "type"
+QUERY_TYPE_FULL = "full"
+QUERY_TYPE_XML = "xml"
+
+QUERY_BLOBINFO_PARAM = "blobinfo"
+BOOL_TRUE_STR = "true"
+BOOL_FALSE_STR = "false"
 
 QUERY_EXPRS = {
     "feq_" : "%s = :%d",
@@ -172,6 +190,7 @@ DATA_TYPE_TO_PROPERTY_TYPE = {
     "date" : db.DateProperty,
     "time" : db.TimeProperty,
     "Blob" : db.BlobProperty,
+    "BlobKey" : blobstore.BlobReferenceProperty,
     "ByteString" : db.ByteStringProperty,
     "Text" : db.TextProperty,
     "User" : db.UserProperty,
@@ -198,6 +217,7 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.TimeProperty) : XSD_PREFIX + ":time",
     get_type_name(db.BlobProperty) : XSD_PREFIX + ":base64Binary",
     get_type_name(db.ByteStringProperty) : XSD_PREFIX + ":base64Binary",
+    get_type_name(blobstore.BlobReferenceProperty) : BLOBINFO_TYPE_NAME,
     get_type_name(db.TextProperty) : XSD_PREFIX + ":string",
     get_type_name(db.UserProperty) : XSD_PREFIX + ":normalizedString",
     get_type_name(db.CategoryProperty) : XSD_PREFIX + ":normalizedString",
@@ -210,6 +230,7 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.RatingProperty) : XSD_PREFIX + ":integer",
     KEY_PROPERTY_TYPE : XSD_PREFIX + ":normalizedString"
     }
+
 
 def parse_date_time(dt_str, dt_format, dt_type, allows_microseconds):
     """Returns a datetime/date/time instance parsed from the given string using the given format info."""
@@ -269,6 +290,15 @@ def xsd_append_element(parent_el, name, prop_type_name, min_occurs, max_occurs):
     if max_occurs is not None:
         element_el.attributes[XSD_ATTR_MAXOCCURS] = max_occurs
     return element_el
+    
+def xsd_append_attribute(parent_el, name, prop_type_name):
+    """Returns an XML Schema attribute with the given attributes appended to the given parent element."""
+    attr_el = append_child(parent_el, XSD_ATTRIBUTE_NAME)
+    attr_el.attributes[NAME_ATTR_NAME] = name
+    type_name = PROPERTY_TYPE_TO_XSD_TYPE.get(prop_type_name, None)
+    if type_name:
+        attr_el.attributes[TYPE_ATTR_NAME] = type_name
+    return attr_el
     
 def get_node_text(node_list, do_strip=False):
     """Returns the complete text from the given node list (optionally stripped) or None if the list is empty."""
@@ -403,7 +433,7 @@ class PropertyHandler(object):
         """Returns the value for this property from the given string value (may be None), for use in a query filter."""
         return self.value_from_string(value)
                 
-    def write_xml_value(self, parent_el, prop_xml_name, model):
+    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
         """Returns the property value from the given model instance converted to an xml element and appended to the
         given parent element."""
         value = self.get_value_as_string(model)
@@ -423,9 +453,8 @@ class PropertyHandler(object):
             xsd_append_nofilter(prop_el)
         return prop_el
 
-    def value_to_response(self, dispatcher, value):
+    def value_to_response(self, dispatcher, value, path):
         """Writes the output of a single property to the dispatcher's response."""
-
         content_type = dispatcher.request.accept.best_matches()[0]
         if not content_type:
             content_type = TEXT_CONTENT_TYPE
@@ -537,8 +566,8 @@ class ByteStringHandler(PropertyHandler):
         if(not value):
             return None
         return db.ByteString(base64.b64decode(value))
-    
 
+    
 class ReferenceHandler(PropertyHandler):
     """PropertyHandler for reference property instances."""
     
@@ -554,6 +583,87 @@ class ReferenceHandler(PropertyHandler):
         return self.property_type.get_value_for_datastore(model)
 
     
+class BlobReferenceHandler(ReferenceHandler):
+    """PropertyHandler for blobstore reference property instances."""
+
+    def __init__(self, property_name, property_type):
+        super(BlobReferenceHandler, self).__init__(property_name, property_type)
+
+    def get_data_type(self):
+        """Returns the blobstore.BlobKey type."""
+        return blobstore.BlobKey
+
+    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
+        """Returns an xml element containing the blobstore.BlobKey and optionally containing the BlobInfo properties
+        as attributes."""
+        blob_key = self.get_value(model)
+        if(self.empty(blob_key)):
+            return None
+        
+        blob_el = append_child(parent_el, prop_xml_name, self.value_to_string(blob_key))
+
+        if include_blob_info:
+            blob_info = blobstore.BlobInfo.get(blob_key)
+            if blob_info:
+                for prop_xml_name, prop_handler in BLOBINFO_PROP_HANDLERS.iteritems():
+                    attr_value = prop_handler.get_value_as_string(blob_info)
+                    if(attr_value is not EMPTY_VALUE):
+                        blob_el.attributes[prop_xml_name] = attr_value
+                
+        return blob_el
+
+    def write_xsd_metadata(self, parent_el, prop_xml_name):
+        """Returns the XML Schema element for this property type appended to the given parent element.  Adds the
+        BlobInfo complex type if necessary."""
+
+        # add simple element for this property of type BlobInfo
+        prop_el = super(BlobReferenceHandler, self).write_xsd_metadata(parent_el, prop_xml_name)
+
+        # add the BlobInfo type definition if not already added
+        schema_el = parent_el.ownerDocument.documentElement
+        has_blob_info = False
+        for type_el in schema_el.childNodes:
+            if(type_el.attributes[NAME_ATTR_NAME].nodeValue == BLOBINFO_TYPE_NAME):
+                has_blob_info = True
+
+        # we need to add the BlobInfo type def
+        if not has_blob_info:
+            blob_type_el = append_child(schema_el, XSD_COMPLEXTYPE_NAME)
+            blob_type_el.attributes[NAME_ATTR_NAME] = BLOBINFO_TYPE_NAME
+            ext_el = append_child(append_child(blob_type_el, XSD_SIMPLECONTENT_NAME), XSD_EXTENSION_NAME)
+            ext_el.attributes[BASE_ATTR_NAME] = XSD_PREFIX + ":normalizedString"
+            for prop_xml_name, prop_handler in BLOBINFO_PROP_HANDLERS.iteritems():
+                xsd_append_attribute(ext_el, prop_xml_name, prop_handler.get_type_string())
+        
+        return prop_el
+
+    def value_to_response(self, dispatcher, value, path):
+        """Writes the output a blobkey property to the dispatcher's response."""
+        
+        if((len(path) > 0) and (path.pop(0) == CONTENT_PATH)):
+            dispatcher.response.clear()
+            content_type = None
+            blob_info = None
+            if value:
+                blob_info = blobstore.BlobInfo.get(value)
+            if blob_info:
+                # return actual blob
+                range_header = dispatcher.request.headers.get(RANGE_HEADER, None)
+                if range_header is not None:
+                    dispatcher.response.headers[blobstore.BLOB_RANGE_HEADER] = range_header
+                dispatcher.response.headers[blobstore.BLOB_KEY_HEADER] = str(value)
+                content_type = blob_info.content_type
+                
+            if not content_type:
+                content_type = dispatcher.request.accept.best_matches()[0]
+            if not content_type:
+                content_type = BINARY_CONTENT_TYPE
+            dispatcher.response.headers[CONTENT_TYPE_HEADER] = content_type
+            return
+        
+        # just return blobinfo key
+        super(BlobReferenceHandler, self).value_to_response(dispatcher, value, path)
+        
 class KeyHandler(ReferenceHandler):
     """PropertyHandler for primary 'key' of a Model instance."""
     
@@ -599,7 +709,7 @@ class ListHandler(PropertyHandler):
         """Returns the value for a query filter based on the list element type."""
         return self.sub_handler.value_from_string(value)
                 
-    def write_xml_value(self, parent_el, prop_xml_name, model):
+    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
         """Returns a list element containing value elements for the property from the given model instance appended to
         the given parent element."""
         values = self.get_value(model)
@@ -633,12 +743,12 @@ class DynamicPropertyHandler(object):
     def __init__(self, property_name):
         self.property_name = property_name
 
-    def write_xml_value(self, parent_el, prop_xml_name, model):
+    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
         """Returns the property value from the given model instance converted to an xml element (with a type
         attribute) of the appropriate type and appended to the given parent element."""
         value = getattr(model, self.property_name)
         prop_handler = self.get_handler(None, value)
-        prop_el = prop_handler.write_xml_value(parent_el, prop_xml_name, model)
+        prop_el = prop_handler.write_xml_value(parent_el, prop_xml_name, model, include_blob_info)
         if prop_el:
             prop_el.attributes[TYPE_ATTR_NAME] = prop_handler.get_type_string()
         return prop_el
@@ -692,6 +802,8 @@ def get_property_handler(property_name, property_type):
         return TextHandler(property_name, property_type)
     elif(isinstance(property_type, db.ListProperty)):
         return ListHandler(property_name, property_type)
+    elif(isinstance(property_type, blobstore.BlobReferenceProperty)):
+        return BlobReferenceHandler(property_name, property_type)
     
     return PropertyHandler(property_name, property_type)
 
@@ -799,23 +911,24 @@ class ModelHandler(object):
         else:
             return prop_handler.value_for_query(prop_query_value)        
         
-    def write_xml_value(self, model_el, model):
+    def write_xml_value(self, model_el, model, include_blob_info):
         """Appends the properties of the given instance as xml elements to the given model element."""
         # write key property first
-        self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler)
+        self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, include_blob_info)
 
         # write static properties next
         for prop_xml_name, prop_handler in self.property_handlers.iteritems():
-            self.write_xml_property(model_el, model, prop_xml_name, prop_handler)
+            self.write_xml_property(model_el, model, prop_xml_name, prop_handler, include_blob_info)
                 
         # write dynamic properties last
         for prop_name in model.dynamic_properties():
             prop_xml_name = convert_to_valid_xml_name(prop_name)
-            self.write_xml_property(model_el, model, prop_xml_name, DynamicPropertyHandler(prop_name))
+            self.write_xml_property(model_el, model, prop_xml_name, DynamicPropertyHandler(prop_name),
+                                    include_blob_info)
 
-    def write_xml_property(self, model_el, model, prop_xml_name, prop_handler):
+    def write_xml_property(self, model_el, model, prop_xml_name, prop_handler, include_blob_info):
         """Writes a property as a property element."""
-        prop_handler.write_xml_value(model_el, prop_xml_name, model)
+        prop_handler.write_xml_value(model_el, prop_xml_name, model, include_blob_info)
 
     def write_xsd_metadata(self, type_el, model_xml_name):
         """Appends the XML Schema elements of the property types of this model type to the given parent element."""
@@ -834,6 +947,14 @@ class ModelHandler(object):
             any_el.attributes[XSD_ATTR_PROCESSCONTENTS] = XSD_LAX_CONTENTS
             any_el.attributes[XSD_ATTR_MINOCCURS] = XSD_NO_MIN
             any_el.attributes[XSD_ATTR_MAXOCCURS] = XSD_NO_MAX
+
+# static collection of property handlers for BlobInfo types (because BlobInfo.properties() is a set not a dict)
+BLOBINFO_PROP_HANDLERS = {
+    "content_type" : PropertyHandler("content_type", db.StringProperty()),
+    "creation" : DateTimeHandler("creation", db.DateTimeProperty()),
+    "filename" : PropertyHandler("filename", db.StringProperty()),
+    "size" : PropertyHandler("size", db.IntegerProperty())
+    }
 
 
 class DispatcherException(Exception):
@@ -1086,6 +1207,10 @@ class Dispatcher(webapp.RequestHandler):
     # 405 -> method not allowed (method not supported by model)
     ##
 
+    def initialize(self, request, response):
+        super(Dispatcher, self).initialize(request, response)
+        request.disp_query_params_ = None
+
     def get(self, *_):
         """Does a REST get, optionally using memcache to cache results.  See get_impl() for more details."""
 
@@ -1133,7 +1258,7 @@ class Dispatcher(webapp.RequestHandler):
                     prop_name = path.pop(0)
                     prop_handler = model_handler.get_property_handler(prop_name)
                     prop_value = prop_handler.get_value(models)
-                    prop_handler.value_to_response(self, prop_value)
+                    prop_handler.value_to_response(self, prop_value, path)
                     return
                 
             else:
@@ -1243,9 +1368,10 @@ class Dispatcher(webapp.RequestHandler):
             models = models[0]
             
         # note, we specifically look in the query string (don't try to parse the POST body)
-        if (self.request.query_string.find("type=full") >= 0):
+        resp_type = self.get_query_param(QUERY_TYPE_PARAM, None)
+        if (resp_type == QUERY_TYPE_FULL):
             self.write_output(self.models_to_xml(model_name, model_handler, models))
-        elif (self.request.query_string.find("type=xml") >= 0):
+        elif (resp_type == QUERY_TYPE_XML):
             self.write_output(self.keys_to_xml(model_handler, models))
         else:
             self.write_output(self.keys_to_text(models))
@@ -1424,6 +1550,7 @@ class Dispatcher(webapp.RequestHandler):
     def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
         impl = minidom.getDOMImplementation()
+        include_blob_info = (self.get_query_param(QUERY_BLOBINFO_PARAM, BOOL_FALSE_STR).lower() == BOOL_TRUE_STR)
         doc = None
         try:
             if isinstance(models, (types.ListType, types.TupleType)):
@@ -1434,10 +1561,10 @@ class Dispatcher(webapp.RequestHandler):
                     
                 for model in models:
                     model_el = append_child(list_el, model_name)
-                    model_handler.write_xml_value(model_el, model)
+                    model_handler.write_xml_value(model_el, model, include_blob_info)
             else:
                 doc = impl.createDocument(None, model_name, None)
-                model_handler.write_xml_value(doc.documentElement, models)
+                model_handler.write_xml_value(doc.documentElement, models, include_blob_info)
 
             return self.doc_to_output(doc)
         finally:
@@ -1525,6 +1652,18 @@ class Dispatcher(webapp.RequestHandler):
                 self.error(exception.error_code)
         else:
             super(Dispatcher, self).handle_exception(exception, debug_mode)
+
+    def get_query_params(self):
+        # lazy (re)parse query params
+        if(self.request.disp_query_params_ is None):
+            self.request.disp_query_params_ = urlparse.parse_qs(self.request.query_string)
+        return self.request.disp_query_params_
+
+    def get_query_param(self, key, default=None):
+        value = self.get_query_params().get(key, None)
+        if(value is None):
+            return default
+        return value[0]
 
     def forbidden(self):
         """Convenience method which raises a DispatcherException with a 403 error code."""
