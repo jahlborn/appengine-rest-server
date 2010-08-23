@@ -55,6 +55,7 @@ import logging
 import re
 import base64
 import urlparse
+import cgi
 
 from google.appengine.api import memcache
 from google.appengine.ext import webapp
@@ -74,6 +75,7 @@ def get_type_name(value_type):
     
 METADATA_PATH = "metadata"
 CONTENT_PATH = "content"
+BLOBUPLOADRESULT_PATH = "__blob_result"
 
 MAX_FETCH_PAGE_SIZE = 1000
 
@@ -114,6 +116,7 @@ JSON_CONTENT_TYPE = "application/json"
 METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
 RANGE_HEADER = "Range"
 BINARY_CONTENT_TYPE = "application/octet-stream"
+FORMDATA_CONTENT_TYPE = "multipart/form-data"
 
 JSON_TEXT_KEY = "#text"
 JSON_ATTR_PREFIX = "@"
@@ -167,8 +170,8 @@ QUERY_TYPE_FULL = "full"
 QUERY_TYPE_XML = "xml"
 
 QUERY_BLOBINFO_PARAM = "blobinfo"
-BOOL_TRUE_STR = "true"
-BOOL_FALSE_STR = "false"
+QUERY_BLOBINFO_TYPE_KEY = "key"
+QUERY_BLOBINFO_TYPE_INFO = "info"
 
 QUERY_CALLBACK_PARAM = "callback"
 
@@ -435,7 +438,7 @@ class PropertyHandler(object):
         """Returns the given property value as a string, used by the default get_value_as_string() method."""
         return unicode(value)
 
-    def value_from_string(self, value):
+    def value_from_xml_string(self, value):
         """Returns the value for this property from the given string value (may be None), used by the default
         read_xml_value() method."""
         if((value is None) or (self.strip_on_read and not value)):
@@ -444,11 +447,16 @@ class PropertyHandler(object):
             value = self.get_data_type()(value)
         return value
 
+    def value_from_raw_string(self, value):
+        """Returns the value for this property from the given 'raw' string value (may be None), used by the default
+        value_from_request() method.  Default impl returns value_from_xml_string(value)."""
+        return self.value_from_xml_string(value)
+
     def value_for_query(self, value):
         """Returns the value for this property from the given string value (may be None), for use in a query filter."""
-        return self.value_from_string(value)
+        return self.value_from_xml_string(value)
                 
-    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
+    def write_xml_value(self, parent_el, prop_xml_name, model, blob_info_format):
         """Returns the property value from the given model instance converted to an xml element and appended to the
         given parent element."""
         value = self.get_value_as_string(model)
@@ -458,7 +466,7 @@ class PropertyHandler(object):
 
     def read_xml_value(self, props, prop_el):
         """Adds the value for this property to the given property dict converted from an xml element."""
-        value = self.value_from_string(get_node_text(prop_el.childNodes, self.strip_on_read))
+        value = self.value_from_xml_string(get_node_text(prop_el.childNodes, self.strip_on_read))
         props[self.property_name] = value
 
     def write_xsd_metadata(self, parent_el, prop_xml_name):
@@ -470,9 +478,13 @@ class PropertyHandler(object):
 
     def value_to_response(self, dispatcher, value, path):
         """Writes the output of a single property to the dispatcher's response."""
-        dispatcher.set_response_content_type(TEXT_CONTENT_TYPE);
+        dispatcher.set_response_content_type(TEXT_CONTENT_TYPE)
         dispatcher.response.out.write(value)
-    
+
+    def value_from_request(self, dispatcher, model, path):
+        """Writes a single property from the dispatcher's response."""
+        value = self.value_from_raw_string(dispatcher.request.body_file.getvalue())
+        setattr(model, self.property_name, value)
         
 class DateTimeHandler(PropertyHandler):
     """PropertyHandler for datetime/data/time property instances."""
@@ -505,7 +517,7 @@ class DateTimeHandler(PropertyHandler):
             value_str += ".000000"
         return unicode(value_str)
 
-    def value_from_string(self, value):
+    def value_from_xml_string(self, value):
         """Returns the datetime/date/time parsed from the relevant iso string value, or None if the string is empty."""
         if(not value):
             return None
@@ -522,7 +534,7 @@ class BooleanHandler(PropertyHandler):
         """Returns the boolean value converted to a string value of 'true' or 'false'."""
         return unicode(value).lower()
 
-    def value_from_string(self, value):
+    def value_from_xml_string(self, value):
         """Returns the boolean value parsed from the given string value: True for the strings 'true' (any case) and
         '1', False for all other non-empty strings, and None otherwise."""
         if(not value):
@@ -542,27 +554,6 @@ class TextHandler(PropertyHandler):
         return False
 
 
-class BlobHandler(PropertyHandler):
-    """PropertyHandler for blob property instances."""
-    
-    def __init__(self, property_name, property_type):
-        super(BlobHandler, self).__init__(property_name, property_type)
-
-    def can_query(self):
-        """Blob properties may not be used in query filters."""
-        return False
-            
-    def value_to_string(self, value):
-        """Returns a blob value converted to a Base64 encoded string."""
-        return base64.b64encode(str(value))
-
-    def value_from_string(self, value):
-        """Returns a blob value parsed from a Base64 encoded string, or None if the string is empty."""
-        if(not value):
-            return None
-        return base64.b64decode(value)
-
-
 class ByteStringHandler(PropertyHandler):
     """PropertyHandler for ByteString property instances."""
 
@@ -573,11 +564,26 @@ class ByteStringHandler(PropertyHandler):
         """Returns a ByteString value converted to a Base64 encoded string."""
         return base64.b64encode(str(value))
 
-    def value_from_string(self, value):
+    def value_from_xml_string(self, value):
         """Returns a ByteString value parsed from a Base64 encoded string, or None if the string is empty."""
         if(not value):
             return None
-        return db.ByteString(base64.b64decode(value))
+        return base64.b64decode(value)
+
+    def value_from_raw_string(self, value):
+        """Returns the given string."""
+        return value
+
+
+class BlobHandler(ByteStringHandler):
+    """PropertyHandler for blob property instances."""
+    
+    def __init__(self, property_name, property_type):
+        super(BlobHandler, self).__init__(property_name, property_type)
+
+    def can_query(self):
+        """Blob properties may not be used in query filters."""
+        return False
 
     
 class ReferenceHandler(PropertyHandler):
@@ -605,7 +611,7 @@ class BlobReferenceHandler(ReferenceHandler):
         """Returns the blobstore.BlobKey type."""
         return blobstore.BlobKey
 
-    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
+    def write_xml_value(self, parent_el, prop_xml_name, model, blob_info_format):
         """Returns an xml element containing the blobstore.BlobKey and optionally containing the BlobInfo properties
         as attributes."""
         blob_key = self.get_value(model)
@@ -614,7 +620,8 @@ class BlobReferenceHandler(ReferenceHandler):
         
         blob_el = append_child(parent_el, prop_xml_name, self.value_to_string(blob_key))
 
-        if include_blob_info:
+        if(blob_info_format == QUERY_BLOBINFO_TYPE_INFO):
+            # include all available blobinfo properties
             blob_info = blobstore.BlobInfo.get(blob_key)
             if blob_info:
                 for prop_xml_name, prop_handler in BLOBINFO_PROP_HANDLERS.iteritems():
@@ -662,6 +669,73 @@ class BlobReferenceHandler(ReferenceHandler):
         
         # just return blobinfo key
         super(BlobReferenceHandler, self).value_to_response(dispatcher, value, path)
+
+    def value_from_request(self, dispatcher, model, path):
+        """Writes a single property from the dispatcher's response."""
+
+        if(len(path) == 0):
+            # just return blobinfo key
+            super(BlobReferenceHandler, self).value_from_request(dispatcher, model, path)
+            return
+
+        if(path.pop(0) != CONTENT_PATH):
+            raise DispatcherException(404)
+
+        if(len(path) > 0):
+            if(path.pop(0) != BLOBUPLOADRESULT_PATH):
+                raise DispatcherException(404)
+
+            # final leg of a blob upload, no modifications left to make, just return model result
+            return
+
+        # set blobinfo contents
+        content_type = dispatcher.request.headers.get(CONTENT_TYPE_HEADER, None)
+        if(not content_type.startswith(FORMDATA_CONTENT_TYPE)):
+
+            # pre-authorize the upload
+            dispatcher.authorizer.can_write_blobinfo(dispatcher, model, self.property_name)
+
+            # need to return upload form
+            redirect_url = dispatcher.request.path
+            if dispatcher.request.query_string:
+                redirect_url += "?" + dispatcher.request.query_string
+            form_url = blobstore.create_upload_url(redirect_url)
+            dispatcher.response.out.write('<html><body>')
+            dispatcher.response.out.write('<form action="%s" method="POST" enctype="%s">' %
+                                          (form_url, FORMDATA_CONTENT_TYPE))
+            dispatcher.response.out.write("""Upload File: <input type="file" name="file"><br> <input type="submit" name="submit" value="Submit"> </form></body></html>""")
+            raise DispatcherException()
+
+        else:
+
+            # upload completed, update the model
+            blob_key = None
+            for key, value in dispatcher.request.params.items():
+                if((key == "file") and isinstance(value, cgi.FieldStorage)):
+                    if 'blob-key' in value.type_options:
+                        blob_key = blobstore.parse_blob_info(value).key()
+
+            if blob_key is None:
+                raise ValueError("Blob upload failed")
+
+            setattr(model, self.property_name, blob_key)
+
+            # authorize the update, post upload.  we need to do this here, because we have to return a redirect
+            # now (the final result is not returned until after the redirect)
+            dispatcher.authorizer.can_write(dispatcher, model, False)
+
+            model.put()
+
+            # redirect will be a GET, so we need to send the caller to a special url, so they can get output which
+            # looks like what would normally result from an update call
+            result_url = dispatcher.base_url + "/" + BLOBUPLOADRESULT_PATH + dispatcher.request.path[len(dispatcher.base_url):]
+
+            if dispatcher.request.query_string:
+                result_url += "?" + dispatcher.request.query_string
+
+            dispatcher.redirect(result_url)
+            raise DispatcherException()
+        
         
 class KeyHandler(ReferenceHandler):
     """PropertyHandler for primary 'key' of a Model instance."""
@@ -706,9 +780,9 @@ class ListHandler(PropertyHandler):
             
     def value_for_query(self, value):
         """Returns the value for a query filter based on the list element type."""
-        return self.sub_handler.value_from_string(value)
+        return self.sub_handler.value_from_xml_string(value)
                 
-    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
+    def write_xml_value(self, parent_el, prop_xml_name, model, blob_info_format):
         """Returns a list element containing value elements for the property from the given model instance appended to
         the given parent element."""
         values = self.get_value(model)
@@ -742,12 +816,12 @@ class DynamicPropertyHandler(object):
     def __init__(self, property_name):
         self.property_name = property_name
 
-    def write_xml_value(self, parent_el, prop_xml_name, model, include_blob_info):
+    def write_xml_value(self, parent_el, prop_xml_name, model, blob_info_format):
         """Returns the property value from the given model instance converted to an xml element (with a type
         attribute) of the appropriate type and appended to the given parent element."""
         value = getattr(model, self.property_name)
         prop_handler = self.get_handler(None, value)
-        prop_el = prop_handler.write_xml_value(parent_el, prop_xml_name, model, include_blob_info)
+        prop_el = prop_handler.write_xml_value(parent_el, prop_xml_name, model, blob_info_format)
         if prop_el:
             prop_el.attributes[TYPE_ATTR_NAME] = prop_handler.get_type_string()
         return prop_el
@@ -910,24 +984,24 @@ class ModelHandler(object):
         else:
             return prop_handler.value_for_query(prop_query_value)        
         
-    def write_xml_value(self, model_el, model, include_blob_info):
+    def write_xml_value(self, model_el, model, blob_info_format):
         """Appends the properties of the given instance as xml elements to the given model element."""
         # write key property first
-        self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, include_blob_info)
+        self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, blob_info_format)
 
         # write static properties next
         for prop_xml_name, prop_handler in self.property_handlers.iteritems():
-            self.write_xml_property(model_el, model, prop_xml_name, prop_handler, include_blob_info)
+            self.write_xml_property(model_el, model, prop_xml_name, prop_handler, blob_info_format)
                 
         # write dynamic properties last
         for prop_name in model.dynamic_properties():
             prop_xml_name = convert_to_valid_xml_name(prop_name)
             self.write_xml_property(model_el, model, prop_xml_name, DynamicPropertyHandler(prop_name),
-                                    include_blob_info)
+                                    blob_info_format)
 
-    def write_xml_property(self, model_el, model, prop_xml_name, prop_handler, include_blob_info):
+    def write_xml_property(self, model_el, model, prop_xml_name, prop_handler, blob_info_format):
         """Writes a property as a property element."""
-        prop_handler.write_xml_value(model_el, prop_xml_name, model, include_blob_info)
+        prop_handler.write_xml_value(model_el, prop_xml_name, model, blob_info_format)
 
     def write_xsd_metadata(self, type_el, model_xml_name):
         """Appends the XML Schema elements of the property types of this model type to the given parent element."""
@@ -1070,6 +1144,19 @@ class Authorizer(object):
         """
         return models
 
+    def can_write_blobinfo(self, dispatcher, model, property_name):
+        """Returns if the a blob for the given property_name on the given model can be uploaded by the user associated
+        with the current request for the given dispatcher, otherwise raises a DispatcherException with an appropriate
+        error code (see the Dispatcher.forbidden() method).  This call is a pre-check _before_ the blob is uploaded
+        (there will be another, normal can_write() check after the upload succeeds).
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          model: the model to be (eventually) modified
+          property_name: the name of the BlobInfo to be uploaded.
+        """
+        pass
+
     def can_delete(self, dispatcher, model_type, model_key):
         """Returns if the given model can be deleted by the user associated with the current request for the given
         dispatcher, otherwise raises a DispatcherException with an appropriate error code (see the
@@ -1209,6 +1296,7 @@ class Dispatcher(webapp.RequestHandler):
     def initialize(self, request, response):
         super(Dispatcher, self).initialize(request, response)
         request.disp_query_params_ = None
+        request.disp_cache_resp_ = True
 
     def get(self, *_):
         """Does a REST get, optionally using memcache to cache results.  See get_impl() for more details."""
@@ -1222,8 +1310,10 @@ class Dispatcher(webapp.RequestHandler):
             else:
                 self.get_impl()
                 out = self.response.out.getvalue()
-                if not memcache.set(self.request.url, out, self.cache_time):
-                    logging.warning("memcache set failed for %s" % self.request.url)
+                # don't cache blobinfo content requests
+                if self.response.disp_cache_resp_:
+                    if not memcache.set(self.request.url, out, self.cache_time):
+                        logging.warning("memcache set failed for %s" % self.request.url)
         else:
             self.get_impl()
 
@@ -1242,6 +1332,15 @@ class Dispatcher(webapp.RequestHandler):
 
         if model_name == METADATA_PATH:
             out = self.get_metadata(path)
+
+        elif(model_name == BLOBUPLOADRESULT_PATH):
+            # this is the final call from a blobinfo upload
+            self.request.disp_cache_resp_ = False
+            path.append(BLOBUPLOADRESULT_PATH)
+            model_name = path.pop(0)
+            model_key = path.pop(0)
+            self.update_impl(path, model_name, model_key, "POST", False)
+            return
             
         else:
             model_handler = self.get_model_handler(model_name, "GET")
@@ -1254,6 +1353,7 @@ class Dispatcher(webapp.RequestHandler):
                 self.authorizer.can_read(self, models)
 
                 if (len(path) > 0):
+                    # single property get
                     prop_name = path.pop(0)
                     prop_handler = model_handler.get_property_handler(prop_name)
                     prop_value = prop_handler.get_value(models)
@@ -1285,7 +1385,7 @@ class Dispatcher(webapp.RequestHandler):
         if (len(path) > 0):
             model_key = path.pop(0)
 
-        self.update_impl(model_name, model_key, "PUT", True)
+        self.update_impl(path, model_name, model_key, "PUT", True)
 
     def post(self, *_):
         """Does a REST post, handles alternate HTTP methods specified via the 'X-HTTP-Method-Override' header"""
@@ -1323,9 +1423,9 @@ class Dispatcher(webapp.RequestHandler):
         if (len(path) > 0):
             model_key = path.pop(0)
 
-        self.update_impl(model_name, model_key, "POST", False)
+        self.update_impl(path, model_name, model_key, "POST", False)
 
-    def update_impl(self, model_name, model_key, method_name, is_replace):
+    def update_impl(self, path, model_name, model_key, method_name, is_replace):
         """Actual implementation of all Model update methods.  Creates/updates/replaces Model instances as specified.
         Writes the key of the modified Model as a plain text result.
         
@@ -1333,26 +1433,39 @@ class Dispatcher(webapp.RequestHandler):
         
         model_handler = self.get_model_handler(model_name, method_name)
 
-        doc = self.input_to_xml()
-
         is_list = False
-        model_els = [(model_key, doc.documentElement)]
-        if(str(doc.documentElement.nodeName) == LIST_EL_NAME):
-            is_list = True
-            model_els = []
-            for node in doc.documentElement.childNodes:
-                if(node.nodeType == node.ELEMENT_NODE):
-                    model_els.append((MULTI_UPDATE_KEY, node))
-
         models = []
-        try:
-            for model_el_key, model_el in model_els:
-                models.append(self.model_from_xml(model_el, model_name, model_handler, model_el_key, is_replace))
-        except Exception:
-            logging.exception("failed parsing model")
-            raise DispatcherException(400)
-        finally:
-            doc.unlink()
+
+        if((not is_replace) and (len(path) > 0)):
+            # single property update
+            prop_name = path.pop(0)
+            if(prop_name == KEY_PROPERTY_NAME):
+                raise KeyError("Property %s is not modifiable" % KEY_PROPERTY_NAME)
+            model = model_handler.get(model_key)
+            prop_handler = model_handler.get_property_handler(prop_name)
+            prop_handler.value_from_request(self, model, path)
+            models.append(model)
+            
+        else:
+            
+            doc = self.input_to_xml()
+
+            model_els = [(model_key, doc.documentElement)]
+            if(str(doc.documentElement.nodeName) == LIST_EL_NAME):
+                is_list = True
+                model_els = []
+                for node in doc.documentElement.childNodes:
+                    if(node.nodeType == node.ELEMENT_NODE):
+                        model_els.append((MULTI_UPDATE_KEY, node))
+
+            try:
+                for model_el_key, model_el in model_els:
+                    models.append(self.model_from_xml(model_el, model_name, model_handler, model_el_key, is_replace))
+            except Exception:
+                logging.exception("failed parsing model")
+                raise DispatcherException(400)
+            finally:
+                doc.unlink()
 
         if is_list:
             models = self.authorizer.filter_write(self, models, is_replace)
@@ -1553,7 +1666,7 @@ class Dispatcher(webapp.RequestHandler):
     def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
         impl = minidom.getDOMImplementation()
-        include_blob_info = (self.get_query_param(QUERY_BLOBINFO_PARAM, BOOL_FALSE_STR).lower() == BOOL_TRUE_STR)
+        blob_info_format = self.get_query_param(QUERY_BLOBINFO_PARAM, QUERY_BLOBINFO_TYPE_KEY)
         doc = None
         try:
             if isinstance(models, (types.ListType, types.TupleType)):
@@ -1564,10 +1677,10 @@ class Dispatcher(webapp.RequestHandler):
                     
                 for model in models:
                     model_el = append_child(list_el, model_name)
-                    model_handler.write_xml_value(model_el, model, include_blob_info)
+                    model_handler.write_xml_value(model_el, model, blob_info_format)
             else:
                 doc = impl.createDocument(None, model_name, None)
-                model_handler.write_xml_value(doc.documentElement, models, include_blob_info)
+                model_handler.write_xml_value(doc.documentElement, models, blob_info_format)
 
             return self.doc_to_output(doc)
         finally:
@@ -1660,6 +1773,7 @@ class Dispatcher(webapp.RequestHandler):
     def serve_blob(self, blob_info):
         """Serves a BlobInfo response."""
         self.response.clear()
+        self.response.disp_cache_resp_ = False
 
         content_type_preferred = None
         if blob_info:
