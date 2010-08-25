@@ -54,7 +54,6 @@ import types
 import logging
 import re
 import base64
-import urlparse
 import cgi
 import pickle
 
@@ -1825,7 +1824,7 @@ class Dispatcher(webapp.RequestHandler):
     def get_query_params(self):
         # lazy (re)parse query params
         if(self.request.disp_query_params_ is None):
-            self.request.disp_query_params_ = urlparse.parse_qs(self.request.query_string)
+            self.request.disp_query_params_ = cgi.parse_qs(self.request.query_string)
         return self.request.disp_query_params_
 
     def get_query_param(self, key, default=None):
