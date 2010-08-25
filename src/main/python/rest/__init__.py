@@ -175,6 +175,10 @@ QUERY_BLOBINFO_TYPE_INFO = "info"
 
 QUERY_CALLBACK_PARAM = "callback"
 
+QUERY_INCLUDEPROPS_PARAM = "include_props"
+
+EXTRA_QUERY_PARAMS = frozenset([QUERY_BLOBINFO_PARAM, QUERY_CALLBACK_PARAM, QUERY_INCLUDEPROPS_PARAM])
+
 QUERY_EXPRS = {
     "feq_" : "%s = :%d",
     "flt_" : "%s < :%d",
@@ -984,20 +988,23 @@ class ModelHandler(object):
         else:
             return prop_handler.value_for_query(prop_query_value)        
         
-    def write_xml_value(self, model_el, model, blob_info_format):
+    def write_xml_value(self, model_el, model, blob_info_format, includeProps):
         """Appends the properties of the given instance as xml elements to the given model element."""
         # write key property first
-        self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, blob_info_format)
+        if((includeProps is None) or (KEY_PROPERTY_NAME in includeProps)):
+            self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, blob_info_format)
 
         # write static properties next
         for prop_xml_name, prop_handler in self.property_handlers.iteritems():
-            self.write_xml_property(model_el, model, prop_xml_name, prop_handler, blob_info_format)
+            if((includeProps is None) or (prop_xml_name in includeProps)):
+                self.write_xml_property(model_el, model, prop_xml_name, prop_handler, blob_info_format)
                 
         # write dynamic properties last
         for prop_name in model.dynamic_properties():
             prop_xml_name = convert_to_valid_xml_name(prop_name)
-            self.write_xml_property(model_el, model, prop_xml_name, DynamicPropertyHandler(prop_name),
-                                    blob_info_format)
+            if((includeProps is None) or (prop_xml_name in includeProps)):
+                self.write_xml_property(model_el, model, prop_xml_name, DynamicPropertyHandler(prop_name),
+                                        blob_info_format)
 
     def write_xml_property(self, model_el, model, prop_xml_name, prop_handler, blob_info_format):
         """Writes a property as a property element."""
@@ -1480,7 +1487,7 @@ class Dispatcher(webapp.RequestHandler):
             models = models[0]
             
         # note, we specifically look in the query string (don't try to parse the POST body)
-        resp_type = self.get_query_param(QUERY_TYPE_PARAM, None)
+        resp_type = self.get_query_param(QUERY_TYPE_PARAM)
         if (resp_type == QUERY_TYPE_FULL):
             self.write_output(self.models_to_xml(model_name, model_handler, models))
         elif (resp_type == QUERY_TYPE_XML):
@@ -1575,7 +1582,7 @@ class Dispatcher(webapp.RequestHandler):
                 ordering = self.request.get(QUERY_ORDERING_PARAM)
                 continue
 
-            if((arg == QUERY_CALLBACK_PARAM) or (arg == QUERY_BLOBINFO_PARAM)):
+            if(arg in EXTRA_QUERY_PARAMS):
                 #ignore
                 continue
             
@@ -1665,8 +1672,12 @@ class Dispatcher(webapp.RequestHandler):
     
     def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
-        impl = minidom.getDOMImplementation()
         blob_info_format = self.get_query_param(QUERY_BLOBINFO_PARAM, QUERY_BLOBINFO_TYPE_KEY)
+        includeProps = self.get_query_param(QUERY_INCLUDEPROPS_PARAM)
+        if(includeProps is not None):
+            includeProps = includeProps.split(",")
+
+        impl = minidom.getDOMImplementation()
         doc = None
         try:
             if isinstance(models, (types.ListType, types.TupleType)):
@@ -1677,10 +1688,10 @@ class Dispatcher(webapp.RequestHandler):
                     
                 for model in models:
                     model_el = append_child(list_el, model_name)
-                    model_handler.write_xml_value(model_el, model, blob_info_format)
+                    model_handler.write_xml_value(model_el, model, blob_info_format, includeProps)
             else:
                 doc = impl.createDocument(None, model_name, None)
-                model_handler.write_xml_value(doc.documentElement, models, blob_info_format)
+                model_handler.write_xml_value(doc.documentElement, models, blob_info_format, includeProps)
 
             return self.doc_to_output(doc)
         finally:
@@ -1757,7 +1768,7 @@ class Dispatcher(webapp.RequestHandler):
             if(first_char == '{'):
                 content_type = JSON_CONTENT_TYPE
                 # check for json callback
-                callback = self.get_query_param(QUERY_CALLBACK_PARAM, None)
+                callback = self.get_query_param(QUERY_CALLBACK_PARAM)
                 if callback:
                     self.response.out.write(callback)
                     self.response.out.write("(")
