@@ -56,6 +56,7 @@ import re
 import base64
 import urlparse
 import cgi
+import pickle
 
 from google.appengine.api import memcache
 from google.appengine.ext import webapp
@@ -167,7 +168,8 @@ QUERY_LIST_TYPE = "fin_"
 
 QUERY_TYPE_PARAM = "type"
 QUERY_TYPE_FULL = "full"
-QUERY_TYPE_XML = "xml"
+QUERY_TYPE_XML = "xml" # deprecated value, (really means xml or json depending on headers, use "structured" instead)
+QUERY_TYPE_STRUCTURED = "structured"
 
 QUERY_BLOBINFO_PARAM = "blobinfo"
 QUERY_BLOBINFO_TYPE_KEY = "key"
@@ -685,60 +687,7 @@ class BlobReferenceHandler(ReferenceHandler):
         if(path.pop(0) != CONTENT_PATH):
             raise DispatcherException(404)
 
-        if(len(path) > 0):
-            if(path.pop(0) != BLOBUPLOADRESULT_PATH):
-                raise DispatcherException(404)
-
-            # final leg of a blob upload, no modifications left to make, just return model result
-            return
-
-        # set blobinfo contents
-        content_type = dispatcher.request.headers.get(CONTENT_TYPE_HEADER, None)
-        if(not content_type.startswith(FORMDATA_CONTENT_TYPE)):
-
-            # pre-authorize the upload
-            dispatcher.authorizer.can_write_blobinfo(dispatcher, model, self.property_name)
-
-            # need to return upload form
-            redirect_url = dispatcher.request.path
-            if dispatcher.request.query_string:
-                redirect_url += "?" + dispatcher.request.query_string
-            form_url = blobstore.create_upload_url(redirect_url)
-            dispatcher.response.out.write('<html><body>')
-            dispatcher.response.out.write('<form action="%s" method="POST" enctype="%s">' %
-                                          (form_url, FORMDATA_CONTENT_TYPE))
-            dispatcher.response.out.write("""Upload File: <input type="file" name="file"><br> <input type="submit" name="submit" value="Submit"> </form></body></html>""")
-            raise DispatcherException()
-
-        else:
-
-            # upload completed, update the model
-            blob_key = None
-            for key, value in dispatcher.request.params.items():
-                if((key == "file") and isinstance(value, cgi.FieldStorage)):
-                    if 'blob-key' in value.type_options:
-                        blob_key = blobstore.parse_blob_info(value).key()
-
-            if blob_key is None:
-                raise ValueError("Blob upload failed")
-
-            setattr(model, self.property_name, blob_key)
-
-            # authorize the update, post upload.  we need to do this here, because we have to return a redirect
-            # now (the final result is not returned until after the redirect)
-            dispatcher.authorizer.can_write(dispatcher, model, False)
-
-            model.put()
-
-            # redirect will be a GET, so we need to send the caller to a special url, so they can get output which
-            # looks like what would normally result from an update call
-            result_url = dispatcher.base_url + "/" + BLOBUPLOADRESULT_PATH + dispatcher.request.path[len(dispatcher.base_url):]
-
-            if dispatcher.request.query_string:
-                result_url += "?" + dispatcher.request.query_string
-
-            dispatcher.redirect(result_url)
-            raise DispatcherException()
+        dispatcher.upload_blob(path, model, self.property_name)
         
         
 class KeyHandler(ReferenceHandler):
@@ -1176,6 +1125,16 @@ class Authorizer(object):
         """
         pass
 
+class CachedResponse(object):
+    """Simple class used to cache query responses."""
+    def __init__(self, out, content_type):
+        self.out = out
+        self.content_type = content_type
+
+    def write_output(self, dispatcher):
+        dispatcher.response.out.write(self.out)
+        dispatcher.response.headers[CONTENT_TYPE_HEADER] = self.content_type
+
 
 class Dispatcher(webapp.RequestHandler):
     """RequestHandler which presents a REST based API for interacting with the datastore of a Google App Engine
@@ -1303,7 +1262,8 @@ class Dispatcher(webapp.RequestHandler):
     def initialize(self, request, response):
         super(Dispatcher, self).initialize(request, response)
         request.disp_query_params_ = None
-        request.disp_cache_resp_ = True
+        response.disp_cache_resp_ = True
+        response.disp_out_type_ = TEXT_CONTENT_TYPE
 
     def get(self, *_):
         """Does a REST get, optionally using memcache to cache results.  See get_impl() for more details."""
@@ -1311,15 +1271,16 @@ class Dispatcher(webapp.RequestHandler):
         self.authenticator.authenticate(self)
         
         if self.caching:
-            out = memcache.get(self.request.url)
-            if out:
-                self.write_output(out)
+            cached_response = memcache.get(self.request.url)
+            if cached_response:
+                cached_response = pickle.loads(cached_response)
+                cached_response.write_output(self)
             else:
                 self.get_impl()
-                out = self.response.out.getvalue()
                 # don't cache blobinfo content requests
                 if self.response.disp_cache_resp_:
-                    if not memcache.set(self.request.url, out, self.cache_time):
+                    cached_response = pickle.dumps(CachedResponse(self.response.out.getvalue(), self.response.disp_out_type_))
+                    if not memcache.set(self.request.url, cached_response, self.cache_time):
                         logging.warning("memcache set failed for %s" % self.request.url)
         else:
             self.get_impl()
@@ -1342,7 +1303,7 @@ class Dispatcher(webapp.RequestHandler):
 
         elif(model_name == BLOBUPLOADRESULT_PATH):
             # this is the final call from a blobinfo upload
-            self.request.disp_cache_resp_ = False
+            self.response.disp_cache_resp_ = False
             path.append(BLOBUPLOADRESULT_PATH)
             model_name = path.pop(0)
             model_key = path.pop(0)
@@ -1490,7 +1451,7 @@ class Dispatcher(webapp.RequestHandler):
         resp_type = self.get_query_param(QUERY_TYPE_PARAM)
         if (resp_type == QUERY_TYPE_FULL):
             self.write_output(self.models_to_xml(model_name, model_handler, models))
-        elif (resp_type == QUERY_TYPE_XML):
+        elif ((resp_type == QUERY_TYPE_STRUCTURED) or (resp_type == QUERY_TYPE_XML)):
             self.write_output(self.keys_to_xml(model_handler, models))
         else:
             self.write_output(self.keys_to_text(models))
@@ -1660,7 +1621,9 @@ class Dispatcher(webapp.RequestHandler):
 
         out_mime_type = self.request.accept.best_match([JSON_CONTENT_TYPE, XML_CONTENT_TYPE])
         if(out_mime_type == JSON_CONTENT_TYPE):
+            self.response.disp_out_type_ = JSON_CONTENT_TYPE
             return xml_to_json(doc)
+        self.response.disp_out_type_ = XML_CONTENT_TYPE
         return doc.toxml(XML_ENCODING)
 
     def input_to_xml(self):
@@ -1762,19 +1725,15 @@ class Dispatcher(webapp.RequestHandler):
     def write_output(self, out):
         """Writes the output to the response."""
         if out:
-            first_char = out[0]
-            content_type = TEXT_CONTENT_TYPE
+            content_type = self.response.disp_out_type_
             out_suffix = None
-            if(first_char == '{'):
-                content_type = JSON_CONTENT_TYPE
+            if(content_type == JSON_CONTENT_TYPE):
                 # check for json callback
                 callback = self.get_query_param(QUERY_CALLBACK_PARAM)
                 if callback:
                     self.response.out.write(callback)
                     self.response.out.write("(")
                     out_suffix = ");"
-            elif(first_char == "<"):
-                content_type = XML_CONTENT_TYPE
 
             self.response.headers[CONTENT_TYPE_HEADER] = content_type
             self.response.out.write(out)
@@ -1796,6 +1755,64 @@ class Dispatcher(webapp.RequestHandler):
             content_type_preferred = blob_info.content_type
             
         self.set_response_content_type(BINARY_CONTENT_TYPE, content_type_preferred)
+
+    def upload_blob(self, path, model, blob_prop_name):
+        """Handles a BlobInfo upload to the property with the given name of the given model instance."""
+
+        if(len(path) > 0):
+            if(path.pop(0) != BLOBUPLOADRESULT_PATH):
+                raise DispatcherException(404)
+
+            # final leg of a blob upload, no modifications left to make, just return model result
+            return
+
+        # set blobinfo contents
+        content_type = self.request.headers.get(CONTENT_TYPE_HEADER, None)
+        if(not content_type.startswith(FORMDATA_CONTENT_TYPE)):
+
+            # pre-authorize the upload
+            self.authorizer.can_write_blobinfo(self, model, blob_prop_name)
+
+            # need to return upload form
+            redirect_url = self.request.path
+            if self.request.query_string:
+                redirect_url += "?" + self.request.query_string
+            form_url = blobstore.create_upload_url(redirect_url)
+            self.response.out.write('<html><body>')
+            self.response.out.write('<form action="%s" method="POST" enctype="%s">' %
+                                          (form_url, FORMDATA_CONTENT_TYPE))
+            self.response.out.write("""Upload File: <input type="file" name="file"><br> <input type="submit" name="submit" value="Submit"> </form></body></html>""")
+            raise DispatcherException()
+
+        else:
+
+            # upload completed, update the model
+            blob_key = None
+            for key, value in self.request.params.items():
+                if((key == "file") and isinstance(value, cgi.FieldStorage)):
+                    if 'blob-key' in value.type_options:
+                        blob_key = blobstore.parse_blob_info(value).key()
+
+            if blob_key is None:
+                raise ValueError("Blob upload failed")
+
+            setattr(model, blob_prop_name, blob_key)
+
+            # authorize the update, post upload.  we need to do this here, because we have to return a redirect
+            # now (the final result is not returned until after the redirect)
+            self.authorizer.can_write(self, model, False)
+
+            model.put()
+
+            # redirect will be a GET, so we need to send the caller to a special url, so they can get output which
+            # looks like what would normally result from an update call
+            result_url = self.base_url + "/" + BLOBUPLOADRESULT_PATH + self.request.path[len(self.base_url):]
+
+            if self.request.query_string:
+                result_url += "?" + self.request.query_string
+
+            self.redirect(result_url)
+            raise DispatcherException()
                 
     def handle_exception(self, exception, debug_mode):
         if(isinstance(exception, DispatcherException)):
