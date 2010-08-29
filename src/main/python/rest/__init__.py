@@ -398,9 +398,10 @@ class PropertyHandler(object):
     
     """
     
-    def __init__(self, property_name, property_type):
+    def __init__(self, property_name, property_type, property_content_type=TEXT_CONTENT_TYPE):
         self.property_name = property_name
         self.property_type = property_type
+        self.property_content_type = property_content_type
 
         # most types can be parsed from stripped strings, but don't strip text data
         self.strip_on_read = True
@@ -483,7 +484,7 @@ class PropertyHandler(object):
 
     def value_to_response(self, dispatcher, value, path):
         """Writes the output of a single property to the dispatcher's response."""
-        dispatcher.set_response_content_type(TEXT_CONTENT_TYPE)
+        dispatcher.set_response_content_type(self.property_content_type)
         dispatcher.response.out.write(value)
 
     def value_from_request(self, dispatcher, model, path):
@@ -563,7 +564,7 @@ class ByteStringHandler(PropertyHandler):
     """PropertyHandler for ByteString property instances."""
 
     def __init__(self, property_name, property_type):
-        super(ByteStringHandler, self).__init__(property_name, property_type)
+        super(ByteStringHandler, self).__init__(property_name, property_type, BINARY_CONTENT_TYPE)
             
     def value_to_string(self, value):
         """Returns a ByteString value converted to a Base64 encoded string."""
