@@ -604,7 +604,11 @@ class ReferenceHandler(PropertyHandler):
             
     def get_value(self, model):
         """Returns the key of the referenced model instance."""
-        return self.property_type.get_value_for_datastore(model)
+        value = self.property_type.get_value_for_datastore(model)
+        # for dynamic props, this is still sometimes the referenced object and not the key
+        if(value and (not isinstance(value, self.get_data_type()))):
+            value = value.key()
+        return value
 
     
 class BlobReferenceHandler(ReferenceHandler):
@@ -808,6 +812,7 @@ class DynamicPropertyHandler(object):
             property_type = getattr(db, property_type)
 
         property_type = property_type(*prop_args)
+        property_type.name = self.property_name
 
         return get_property_handler(self.property_name, property_type)
 
