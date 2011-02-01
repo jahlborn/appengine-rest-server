@@ -375,10 +375,8 @@ def json_to_xml(json_doc):
 
 def json_node_to_xml(xml_node, json_node):
     doc = xml_node.ownerDocument
-    if(isinstance(json_node, basestring)):
-        xml_node.appendChild(doc.createTextNode(json_node))
-    elif(isinstance(json_node, (int, long, float, complex, bool))):
-        xml_node.appendChild(doc.createTextNode(str(json_node)))
+    if(isinstance(json_node, (basestring, int, long, float, complex, bool))):
+        xml_node.appendChild(doc.createTextNode(unicode(json_node)))
     else:
         for json_node_name, json_node_value in json_node.iteritems():
             if(json_node_name[0] == JSON_ATTR_PREFIX):
