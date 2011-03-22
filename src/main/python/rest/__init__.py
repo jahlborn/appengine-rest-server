@@ -1715,7 +1715,8 @@ class Dispatcher(webapp.RequestHandler):
 
             if(is_replace):
                 for prop_name, prop_type in model.properties().iteritems():
-                    setattr(model, prop_name, prop_type.default_value())
+                    if(prop_name not in props):
+                        setattr(model, prop_name, prop_type.default_value())
                 for prop_name in model.dynamic_properties():
                     delattr(model, prop_name)
 
