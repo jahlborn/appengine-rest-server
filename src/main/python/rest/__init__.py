@@ -1634,7 +1634,7 @@ class Dispatcher(webapp.RequestHandler):
     def input_to_xml(self):
 
         content_type = self.request.headers.get(CONTENT_TYPE_HEADER, None)
-        if(content_type.startswith(JSON_CONTENT_TYPE)):
+        if((content_type != None) and content_type.startswith(JSON_CONTENT_TYPE)):
             return json_to_xml(self.request.body_file)
         return minidom.parse(self.request.body_file)
     
