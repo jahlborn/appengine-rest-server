@@ -1159,7 +1159,14 @@ class Dispatcher(webapp.RequestHandler):
         base_url: URL prefix expected on requests
 
         fetch_page_size: number of instances to return per get-all call (note, App Engine has a builtin limit of 1000)
-        
+
+        authenticator: Authenticator which controls access to this service (default allows any caller)
+
+        authorizer: Authorizer which controls access to the data in this service (default allows all access)
+
+        output_content_types: content types which may be requested for output.  the last value in the list is the
+                              'default' type used when no type is requested by the caller.  the only supported types
+                              are currently JSON_CONTENT_TYPE and XML_CONTENT_TYPE.
     """
 
     caching = False
@@ -1168,6 +1175,7 @@ class Dispatcher(webapp.RequestHandler):
     fetch_page_size = 50
     authenticator = Authenticator()
     authorizer = Authorizer()
+    output_content_types = [JSON_CONTENT_TYPE, XML_CONTENT_TYPE]
     
     model_handlers = {}
 
@@ -1624,7 +1632,7 @@ class Dispatcher(webapp.RequestHandler):
 
     def doc_to_output(self, doc):
 
-        out_mime_type = self.request.accept.best_match([JSON_CONTENT_TYPE, XML_CONTENT_TYPE])
+        out_mime_type = self.request.accept.best_match(self.output_content_types)
         if(out_mime_type == JSON_CONTENT_TYPE):
             self.response.disp_out_type_ = JSON_CONTENT_TYPE
             return xml_to_json(doc)
