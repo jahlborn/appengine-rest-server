@@ -482,7 +482,7 @@ class PropertyHandler(object):
             xsd_append_nofilter(prop_el)
         return prop_el
 
-    def value_to_response(self, dispatcher, value, path):
+    def value_to_response(self, dispatcher, prop_xml_name, value, path):
         """Writes the output of a single property to the dispatcher's response."""
         dispatcher.set_response_content_type(self.property_content_type)
         dispatcher.response.out.write(value)
@@ -667,7 +667,7 @@ class BlobReferenceHandler(ReferenceHandler):
         
         return prop_el
 
-    def value_to_response(self, dispatcher, value, path):
+    def value_to_response(self, dispatcher, prop_xml_name, value, path):
         """Writes the output a blobkey property (or the blob contents) to the dispatcher's response."""
         
         if((len(path) > 0) and (path.pop(0) == CONTENT_PATH)):
@@ -678,7 +678,7 @@ class BlobReferenceHandler(ReferenceHandler):
             return
         
         # just return blobinfo key
-        super(BlobReferenceHandler, self).value_to_response(dispatcher, value, path)
+        super(BlobReferenceHandler, self).value_to_response(dispatcher, prop_xml_name, value, path)
 
     def value_from_request(self, dispatcher, model, path):
         """Writes a single property from the dispatcher's response."""
@@ -759,14 +759,38 @@ class ListHandler(PropertyHandler):
                 self.sub_handler.read_xml_value(sub_props, item_node)
                 values.append(sub_props.pop(ITEM_EL_NAME))
         props[self.property_name] = values
-
+        
     def write_xsd_metadata(self, parent_el, prop_xml_name):
         """Returns the XML Schema list element for this property type appended to the given parent element."""
         list_el = super(ListHandler, self).write_xsd_metadata(parent_el, prop_xml_name)
         seq_el = xsd_append_sequence(list_el)
         xsd_append_element(seq_el, ITEM_EL_NAME, self.sub_handler.get_type_string(), XSD_NO_MIN, XSD_NO_MIN)
         return list_el
-    
+
+    def value_to_response(self, dispatcher, prop_xml_name, value, path):
+        """Writes the this list to the dispatcher's response."""
+
+        if(len(path) > 0):
+            # get individual list element
+            item_value = value[int(path.pop(0))]
+            self.sub_handler.value_to_response(dispatcher, ITEM_EL_NAME, item_value, path)
+            return
+
+        # return entire list as xml/json
+        impl = minidom.getDOMImplementation()
+        doc = None
+        
+        try:
+            doc = impl.createDocument(None, prop_xml_name, None)
+            if(value):
+                for val in value:
+                    append_child(doc.documentElement, ITEM_EL_NAME, self.sub_handler.value_to_string(val))
+            dispatcher.write_output(dispatcher.doc_to_output(doc))            
+        finally:
+            if doc:
+                doc.unlink()
+
+                
 class DynamicPropertyHandler(object):
     """PropertyHandler for dynamic properties on Expando models."""
     
@@ -1338,7 +1362,7 @@ class Dispatcher(webapp.RequestHandler):
                     prop_name = path.pop(0)
                     prop_handler = model_handler.get_property_handler(prop_name)
                     prop_value = prop_handler.get_value(models)
-                    prop_handler.value_to_response(self, prop_value, path)
+                    prop_handler.value_to_response(self, prop_name, prop_value, path)
                     return
                 
             else:
