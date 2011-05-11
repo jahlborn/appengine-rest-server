@@ -456,6 +456,8 @@ class PropertyHandler(object):
     def value_from_raw_string(self, value):
         """Returns the value for this property from the given 'raw' string value (may be None), used by the default
         value_from_request() method.  Default impl returns value_from_xml_string(value)."""
+        if((value is not None) and self.strip_on_read):
+            value = value.strip()
         return self.value_from_xml_string(value)
 
     def value_for_query(self, value):
@@ -768,7 +770,7 @@ class ListHandler(PropertyHandler):
         return list_el
 
     def value_to_response(self, dispatcher, prop_xml_name, value, path):
-        """Writes the this list to the dispatcher's response."""
+        """Writes this list (or a single element of this list) to the dispatcher's response."""
 
         if(len(path) > 0):
             # get individual list element
@@ -789,6 +791,31 @@ class ListHandler(PropertyHandler):
         finally:
             if doc:
                 doc.unlink()
+
+    def value_from_request(self, dispatcher, model, path):
+        """Writes this list property (or a single element of the list) from the dispatcher's response."""
+
+        if(len(path) > 0):
+            # set individual list element
+            item_value = self.sub_handler.value_from_raw_string(dispatcher.request.body_file.getvalue())
+            value = getattr(model, self.property_name)
+            item_index = int(path.pop(0))
+            if(item_index == len(value)):
+                value.append(item_value)
+            else:
+                value[item_index] = item_value
+            return
+
+        # set entire list from xml/json
+        doc = dispatcher.input_to_xml()
+
+        try:
+            props = {}
+            self.read_xml_value(props, doc.documentElement)
+            value = props[self.property_name]
+            setattr(model, self.property_name, value)
+        finally:
+            doc.unlink()
 
                 
 class DynamicPropertyHandler(object):
