@@ -3,11 +3,17 @@ All rights reserved.
 
 Basic REST server for Google App Engine Applications using the builtin Datastore API.
 
+For extended feature list, see http://code.google.com/p/appengine-rest-server/
+
 ========
 
 For example client usage, see example.txt.
 
 ========
+
+
+Getting Started
+---------------
 
 To use with an existing application:
 
