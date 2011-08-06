@@ -81,7 +81,7 @@ MAX_FETCH_PAGE_SIZE = 1000
 
 XML_CLEANSE_PATTERN1 = re.compile(r"^(\d)")
 XML_CLEANSE_REPL1 = r"_\1"
-XML_CLEANSE_PATTERN2 = re.compile(r"[^a-zA-Z0-9]")
+XML_CLEANSE_PATTERN2 = re.compile(r"[^a-zA-Z0-9_\-]")
 XML_CLEANSE_REPL2 = r"_"
 
 EMPTY_VALUE = object()
