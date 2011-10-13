@@ -1352,7 +1352,7 @@ class Dispatcher(webapp.RequestHandler):
         super(Dispatcher, self).__init__()
 
     def add_models_from_module(cls, model_module, use_module_name=False, exclude_model_types=None,
-                               model_methods=ALL_MODEL_METHODS):
+                               model_methods=ALL_MODEL_METHODS, recurse=False):
         """Adds all models from the given module to this request handler.  The name of the Model class (with invalid
         characters converted to the '_' character) will be used as the REST path for Models of that type (optionally
         including the module name).
@@ -1368,6 +1368,7 @@ class Dispatcher(webapp.RequestHandler):
           exclude_model_types: optional list of Model types to be excluded from the REST handler.
           model_methods: optional methods supported for the given model (one or more of ['GET', 'POST', 'PUT',
                          'DELETE', 'GET_METADATA']), defaults to all methods
+          recurse: True to recurse into sub-modules when searching for Models, False otherwise
           
         """
         logging.info("adding models from module %s" % model_module)
@@ -1380,7 +1381,11 @@ class Dispatcher(webapp.RequestHandler):
             module_name = get_type_name(model_module) + "."
         for obj_name in dir(model_module):
             obj = getattr(model_module, obj_name)
-            if(isinstance(obj, type) and issubclass(obj, db.Model) and (obj not in exclude_model_types)):
+            if(isinstance(obj, types.ModuleType)):
+                # only import "nested" modules, otherwise we get the whole world and bad things happen
+                if recurse and get_type_name(obj).startswith(get_type_name(model_module) + "."):
+                    cls.add_models_from_module(obj, use_module_name, exclude_model_types, model_methods, recurse)
+            elif(isinstance(obj, type) and issubclass(obj, db.Model) and (obj not in exclude_model_types)):
                 model_name = module_name + get_type_name(obj)
                 cls.add_model(model_name, obj, model_methods)
         
