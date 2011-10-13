@@ -493,7 +493,8 @@ class PropertyHandler(object):
         """Writes a single property from the dispatcher's response."""
         value = self.value_from_raw_string(dispatcher.request.body_file.getvalue())
         setattr(model, self.property_name, value)
-        
+
+
 class DateTimeHandler(PropertyHandler):
     """PropertyHandler for datetime/data/time property instances."""
     
@@ -766,7 +767,7 @@ class ListHandler(PropertyHandler):
         """Returns the XML Schema list element for this property type appended to the given parent element."""
         list_el = super(ListHandler, self).write_xsd_metadata(parent_el, prop_xml_name)
         seq_el = xsd_append_sequence(list_el)
-        xsd_append_element(seq_el, ITEM_EL_NAME, self.sub_handler.get_type_string(), XSD_NO_MIN, XSD_NO_MIN)
+        xsd_append_element(seq_el, ITEM_EL_NAME, self.sub_handler.get_type_string(), XSD_NO_MIN, XSD_NO_MAX)
         return list_el
 
     def value_to_response(self, dispatcher, prop_xml_name, value, path):
