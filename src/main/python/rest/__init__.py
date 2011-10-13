@@ -88,7 +88,7 @@ EMPTY_VALUE = object()
 MULTI_UPDATE_KEY = object()
 
 KEY_PROPERTY_NAME = "key"
-KEY_PROPERTY_TYPE = "KeyProperty"
+KEY_PROPERTY_TYPE_NAME = "KeyProperty"
 KEY_QUERY_FIELD = "__key__"
 
 TYPES_EL_NAME = "types"
@@ -97,6 +97,13 @@ LIST_EL_NAME = "list"
 TYPE_ATTR_NAME = "type"
 NAME_ATTR_NAME = "name"
 BASE_ATTR_NAME = "base"
+PROPERTY_ATTR_NAME = "property"
+REQUIRED_ATTR_NAME = "required"  
+DEFAULT_ATTR_NAME = "default"  
+INDEXED_ATTR_NAME = "indexed"
+MULTILINE_ATTR_NAME = "multiline"
+VERBOSENAME_ATTR_NAME = "verbose_name"
+REFERENCECLASS_ATTR_NAME = "reference_class"
 ITEM_EL_NAME = "item"
 
 DATA_TYPE_SEPARATOR = ":"
@@ -135,6 +142,7 @@ XSD_SEQUENCE_NAME = XSD_PREFIX + ":sequence"
 XSD_ANY_NAME = XSD_PREFIX + ":any"
 XSD_ANNOTATION_NAME = XSD_PREFIX + ":annotation"
 XSD_APPINFO_NAME = XSD_PREFIX + ":appinfo"
+XSD_DOCUMENTATION_NAME = XSD_PREFIX + ":documentation"
 XSD_FILTER_PREFIX = "bm"
 XSD_ATTR_FILTER_XMLNS = "xmlns:" + XSD_FILTER_PREFIX
 XSD_FILTER_NS = "http://www.boomi.com/connector/annotation"
@@ -150,6 +158,15 @@ XSD_NO_MIN = "0"
 XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
 BLOBINFO_TYPE_NAME = "BlobInfo"
+
+REST_MD_URI = "uri:com.boomi.rest"
+REST_MD_PREFIX = "rest"
+REST_MD_XMLNS = "xmlns:" + REST_MD_PREFIX
+REST_MD_METADATA_NAME = REST_MD_PREFIX + ":metadata"
+REST_MD_CHOICES_NAME = REST_MD_PREFIX + ":choices"
+REST_MD_CHOICE_NAME = REST_MD_PREFIX + ":choice"
+REST_MD_DEFAULT_NAME = REST_MD_PREFIX + ":default"
+REST_MD_ITEM_NAME = REST_MD_PREFIX + ":item"
 
 ALL_MODEL_METHODS = frozenset(["GET", "POST", "PUT", "DELETE", "GET_METADATA"])
 READ_ONLY_MODEL_METHODS = frozenset(["GET", "GET_METADATA"])
@@ -241,8 +258,24 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.PhoneNumberProperty) : XSD_PREFIX + ":normalizedString",
     get_type_name(db.PostalAddressProperty) : XSD_PREFIX + ":normalizedString",
     get_type_name(db.RatingProperty) : XSD_PREFIX + ":integer",
-    KEY_PROPERTY_TYPE : XSD_PREFIX + ":normalizedString"
+    KEY_PROPERTY_TYPE_NAME : XSD_PREFIX + ":normalizedString"
     }
+
+class KeyPseudoType(object):
+    """Fake PropertyType class for the KeyHandler class."""
+
+    def __init__(self):
+        self.verbose_name = None
+        self.default = None
+        self.required = True
+        self.choices = None
+        self.indexed = True
+
+    def empty(self, value):
+        """Returns True if the value is any value which evaluates to False, False otherwise."""
+        return not value
+
+KEY_PROPERTY_TYPE = KeyPseudoType()
 
 
 def parse_date_time(dt_str, dt_format, dt_type, allows_microseconds):
@@ -282,14 +315,28 @@ def xsd_append_sequence(parent_el):
     seq_el = append_child(ctype_el, XSD_SEQUENCE_NAME)
     return seq_el
 
-def xsd_append_nofilter(parent_el):
+def xsd_append_nofilter(annotation_el):
     """Returns Boomi XML Schema no filter annotation appended to the given parent element."""
-    child_el = append_child(parent_el, XSD_ANNOTATION_NAME)
-    child_el = append_child(child_el, XSD_APPINFO_NAME)
+    child_el = append_child(annotation_el, XSD_APPINFO_NAME)
     filter_el = append_child(child_el, XSD_FILTER_NAME)
     filter_el.attributes[XSD_ATTR_FILTER_XMLNS] = XSD_FILTER_NS
     filter_el.attributes[XSD_ATTR_NOFILTER] = TRUE_VALUE
     return filter_el
+
+def xsd_append_rest_metadata(annotation_el):
+    """Returns rest metadata annotation appended to the given parent element."""
+    element_el = append_child(annotation_el, XSD_APPINFO_NAME)
+    element_el = append_child(element_el, REST_MD_METADATA_NAME)
+    element_el.attributes[REST_MD_XMLNS] = REST_MD_URI
+    return element_el
+
+def xsd_append_choices(parent_el, prop_handler, choices):
+    choice_parent = append_child(parent_el, REST_MD_CHOICES_NAME)
+    
+    for choice in choices:
+        append_child(choice_parent, REST_MD_CHOICE_NAME, prop_handler.value_to_string(choice))
+        
+    return choice_parent
 
 def xsd_append_element(parent_el, name, prop_type_name, min_occurs, max_occurs):
     """Returns an XML Schema element with the given attributes appended to the given parent element."""
@@ -414,7 +461,7 @@ class PropertyHandler(object):
             
     def can_query(self):
         """Returns True if this property can be used as a query filter, False otherwise."""
-        return True
+        return self.property_type.indexed
             
     def get_data_type(self):
         """Returns the type of data this property accepts."""
@@ -480,9 +527,33 @@ class PropertyHandler(object):
     def write_xsd_metadata(self, parent_el, prop_xml_name):
         """Returns the XML Schema element for this property type appended to the given parent element."""
         prop_el = xsd_append_element(parent_el, prop_xml_name, self.get_type_string(), XSD_NO_MIN, XSD_SINGLE_MAX)
+        annot_el = self.write_xsd_metadata_annotation(prop_el)
         if(not self.can_query()):
-            xsd_append_nofilter(prop_el)
+            xsd_append_nofilter(annot_el)
         return prop_el
+
+    def write_xsd_metadata_annotation(self, prop_el):
+        """Writes the additional property metadata annotation element and returns it."""
+        annotation_el = append_child(prop_el, XSD_ANNOTATION_NAME)
+        element_el = xsd_append_rest_metadata(annotation_el)
+
+        prop_type = self.property_type
+        element_el.attributes[REQUIRED_ATTR_NAME] = str(prop_type.required).lower()
+        element_el.attributes[INDEXED_ATTR_NAME] = str(prop_type.indexed).lower()
+
+        if prop_type.default is not None:
+            element_el.attributes[DEFAULT_ATTR_NAME] = self.value_to_string(prop_type.default)
+
+        if prop_type.verbose_name is not None:
+            element_el.attributes[VERBOSENAME_ATTR_NAME] = unicode(prop_type.verbose_name)
+
+        if hasattr(prop_type, "multiline"):
+            element_el.attributes[MULTILINE_ATTR_NAME] = str(prop_type.multiline).lower()
+
+        if prop_type.choices:
+            xsd_append_choices(element_el, self, prop_type.choices)
+
+        return annotation_el
 
     def value_to_response(self, dispatcher, prop_xml_name, value, path):
         """Writes the output of a single property to the dispatcher's response."""
@@ -594,12 +665,12 @@ class BlobHandler(ByteStringHandler):
         """Blob properties may not be used in query filters."""
         return False
 
-    
-class ReferenceHandler(PropertyHandler):
-    """PropertyHandler for reference property instances."""
+
+class BaseReferenceHandler(PropertyHandler):
+    """Base PropertyHandler for property instances which work with keys/references."""
     
     def __init__(self, property_name, property_type):
-        super(ReferenceHandler, self).__init__(property_name, property_type)
+        super(BaseReferenceHandler, self).__init__(property_name, property_type)
 
     def get_data_type(self):
         """Returns the db.Key type."""
@@ -614,7 +685,28 @@ class ReferenceHandler(PropertyHandler):
         return value
 
     
-class BlobReferenceHandler(ReferenceHandler):
+class ReferenceHandler(BaseReferenceHandler):
+    """PropertyHandler for reference property instances."""
+    
+    def __init__(self, property_name, property_type):
+        super(ReferenceHandler, self).__init__(property_name, property_type)
+
+    def write_xsd_metadata_annotation(self, prop_el):
+        """Writes the annotation metadata for reference properties."""
+        annot_el = super(ReferenceHandler, self).write_xsd_metadata_annotation(prop_el)
+        appinf_el = annot_el.childNodes[0].childNodes[0]
+        
+        reference_class_name = XSD_ANY_NAME
+        reference_class = self.property_type.reference_class
+        if (reference_class is not None) and (reference_class is not db.Model):
+            reference_class_name = reference_class.__name__
+
+        appinf_el.attributes[REFERENCECLASS_ATTR_NAME] = reference_class_name
+
+        return annot_el
+
+    
+class BlobReferenceHandler(BaseReferenceHandler):
     """PropertyHandler for blobstore reference property instances."""
 
     def __init__(self, property_name, property_type):
@@ -695,17 +787,13 @@ class BlobReferenceHandler(ReferenceHandler):
             raise DispatcherException(404)
 
         dispatcher.upload_blob(path, model, self.property_name)
-        
-        
-class KeyHandler(ReferenceHandler):
+
+
+class KeyHandler(BaseReferenceHandler):
     """PropertyHandler for primary 'key' of a Model instance."""
     
     def __init__(self):
-        super(KeyHandler, self).__init__(KEY_PROPERTY_NAME, None)
-
-    def empty(self, value):
-        """Returns True if the value is any value which evaluates to False, False otherwise."""
-        return not value
+        super(KeyHandler, self).__init__(KEY_PROPERTY_NAME, KEY_PROPERTY_TYPE)
 
     def get_query_field(self):
         """Returns the special key query field name '__key__'"""
@@ -719,7 +807,7 @@ class KeyHandler(ReferenceHandler):
 
     def get_type_string(self):
         """Returns the custom 'KeyProperty' type name."""
-        return KEY_PROPERTY_TYPE
+        return KEY_PROPERTY_TYPE_NAME
 
     
 class ListHandler(PropertyHandler):
@@ -770,6 +858,26 @@ class ListHandler(PropertyHandler):
         xsd_append_element(seq_el, ITEM_EL_NAME, self.sub_handler.get_type_string(), XSD_NO_MIN, XSD_NO_MAX)
         return list_el
 
+    def write_xsd_metadata_annotation(self, prop_el):
+        """Writes the list property metadata annotation element and returns it."""
+        annotation_el = append_child(prop_el, XSD_ANNOTATION_NAME)
+        element_el = xsd_append_rest_metadata(annotation_el)
+
+        prop_type = self.property_type
+        element_el.attributes[REQUIRED_ATTR_NAME] = str(prop_type.required).lower()
+        element_el.attributes[INDEXED_ATTR_NAME] = str(prop_type.indexed).lower()
+
+        if prop_type.verbose_name is not None:
+            element_el.attributes[VERBOSENAME_ATTR_NAME] = unicode(prop_type.verbose_name)
+
+        # list properties always have at least an empty list as default
+        default_el = append_child(element_el, REST_MD_DEFAULT_NAME)
+        if prop_type.default is not None:
+            for val in prop_type.default:
+                append_child(default_el, ITEM_EL_NAME, self.sub_handler.value_to_string(val))
+        
+        return annotation_el
+    
     def value_to_response(self, dispatcher, prop_xml_name, value, path):
         """Writes this list (or a single element of this list) to the dispatcher's response."""
 
@@ -1020,6 +1128,11 @@ class ModelHandler(object):
         """Appends the XML Schema elements of the property types of this model type to the given parent element."""
         top_el = append_child(type_el, XSD_ELEMENT_NAME)
         top_el.attributes[NAME_ATTR_NAME] = model_xml_name
+
+        if Dispatcher.include_docstring_in_schema and self.model_type.__doc__:
+            annotation_el = append_child(top_el, XSD_ANNOTATION_NAME)
+            append_child(annotation_el, XSD_DOCUMENTATION_NAME, self.model_type.__doc__)
+
         seq_el = xsd_append_sequence(top_el)
 
         self.key_handler.write_xsd_metadata(seq_el, KEY_PROPERTY_NAME)
@@ -1219,6 +1332,9 @@ class Dispatcher(webapp.RequestHandler):
         output_content_types: content types which may be requested for output.  the last value in the list is the
                               'default' type used when no type is requested by the caller.  the only supported types
                               are currently JSON_CONTENT_TYPE and XML_CONTENT_TYPE.
+
+       include_docstring_in_schema: whether or not the docstring for a Model should be included in the schema.
+                                    Defaults to False
     """
 
     caching = False
@@ -1228,6 +1344,7 @@ class Dispatcher(webapp.RequestHandler):
     authenticator = Authenticator()
     authorizer = Authorizer()
     output_content_types = [JSON_CONTENT_TYPE, XML_CONTENT_TYPE]
+    include_docstring_in_schema = False
     
     model_handlers = {}
 
