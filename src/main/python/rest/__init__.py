@@ -1482,7 +1482,7 @@ class Dispatcher(webapp.RequestHandler):
         
         """
 
-        path = self.split_path()
+        path = self.split_path(1)
         model_name = path.pop(0)
 
         if model_name == METADATA_PATH:
@@ -1534,7 +1534,7 @@ class Dispatcher(webapp.RequestHandler):
 
         self.authenticator.authenticate(self)
         
-        path = self.split_path()
+        path = self.split_path(1)
         model_name = path.pop(0)
         model_key = None
         if (len(path) > 0):
@@ -1571,7 +1571,7 @@ class Dispatcher(webapp.RequestHandler):
         
         """
 
-        path = self.split_path()
+        path = self.split_path(1)
         model_name = path.pop(0)
 
         model_key = None
@@ -1652,7 +1652,7 @@ class Dispatcher(webapp.RequestHandler):
 
         self.authenticator.authenticate(self)
         
-        path = self.split_path()
+        path = self.split_path(2)
         model_name = path.pop(0)
         model_key = path.pop(0)
 
@@ -1782,12 +1782,14 @@ class Dispatcher(webapp.RequestHandler):
 
         return models
         
-    def split_path(self):
+    def split_path(self, min_comps):
         """Returns the request path split into non-empty components."""
         path = self.request.path
         if(path.startswith(self.base_url)):
             path = path[len(self.base_url):]
         path = [i for i in path.split('/') if i]
+        if(len(path) < min_comps):
+            raise DispatcherException(404)
         return path
 
     def get_model_handler(self, model_name, method_name, failure_code=404):
