@@ -999,6 +999,62 @@ def get_property_handler(property_name, property_type):
     return PropertyHandler(property_name, property_type)
 
 
+class ModelQuery(object):
+    """Utility class for holding parameters for a model query."""
+
+    def __init__(self):
+        self.fetch_page_size = MAX_FETCH_PAGE_SIZE
+        self.fetch_offset = 0
+        self.ordering = None
+        self.query_expr = None
+        self.query_params = []
+
+    def parse(self, dispatcher, model_handler):
+        """Parses the current request into a query."""
+
+        for arg in dispatcher.request.arguments():
+            if(arg == QUERY_OFFSET_PARAM):
+                self.fetch_offset = int(dispatcher.request.get(QUERY_OFFSET_PARAM))
+                continue
+            
+            if(arg == QUERY_PAGE_SIZE_PARAM):
+                self.fetch_page_size = int(dispatcher.request.get(QUERY_PAGE_SIZE_PARAM))
+                continue
+            
+            if(arg == QUERY_ORDERING_PARAM):
+                self.ordering = dispatcher.request.get(QUERY_ORDERING_PARAM)
+                continue
+
+            if(arg in EXTRA_QUERY_PARAMS):
+                #ignore
+                continue
+            
+            match = QUERY_TERM_PATTERN.match(arg)
+            if(match is None):
+                logging.warning("ignoring unexpected query param %s" % arg)
+                continue
+
+            query_type = match.group(1)
+            query_field = match.group(2)
+            query_sub_expr = QUERY_EXPRS[query_type]
+
+            query_values = dispatcher.request.get_all(arg)
+            if(query_type == QUERY_LIST_TYPE):
+                query_values = [v.split(",") for v in query_values]
+
+            query_field, query_values = model_handler.read_query_values(query_field, query_values)
+
+            for value in query_values:
+                self.query_params.append(value)
+                query_sub_expr = query_sub_expr % (query_field, len(self.query_params))
+                if(not self.query_expr):
+                    self.query_expr = QUERY_PREFIX + query_sub_expr
+                else:
+                    self.query_expr += QUERY_JOIN + query_sub_expr
+
+        self.fetch_page_size = max(min(dispatcher.fetch_page_size, self.fetch_page_size, MAX_FETCH_PAGE_SIZE), 1)
+        
+
 class Lazy(object):
     """Utility class for enabling lazy initialization of decorated properties."""
     
@@ -1043,22 +1099,32 @@ class ModelHandler(object):
         """Returns a newly created model instance with the given properties (as a keyword dict)."""
         return self.model_type(**props)
 
-    def get_all(self, limit, offset, ordering, query_expr, query_params):
-        """Returns all model instances of this type."""
-        if(query_expr is None):
+    def get_all(self, model_query):
+        """Returns all model instances of this type matching the given query."""
+        if(model_query.query_expr is None):
             query = self.model_type.all()
-            if(ordering):
-                query.order(ordering)
+            if(model_query.ordering):
+                query.order(model_query.ordering)
         else:
-            if(ordering):
+            if(model_query.ordering):
                 order_type = QUERY_ORDER_ASC
+                ordering = model_query.ordering
                 if(ordering[0] == "-"):
                     ordering = ordering[1:]
                     order_type = QUERY_ORDER_DESC
-                query_expr += QUERY_ORDERBY + ordering + order_type
-            query = self.model_type.gql(query_expr, *query_params)
+                model_query.query_expr += QUERY_ORDERBY + ordering + order_type
+            query = self.model_type.gql(model_query.query_expr, *model_query.query_params)
                 
-        return query.fetch(limit, offset)
+        return query.fetch(model_query.fetch_page_size, model_query.fetch_offset)
+    
+    def delete_all(self, model_query):
+        """Deletes all model instances of this type matching the given query."""
+        if(model_query.query_expr is None):
+            query = self.model_type.all()
+        else:
+            query = self.model_type.gql(model_query.query_expr, *model_query.query_params)
+
+        db.delete(query)
     
     def get_property_handler(self, prop_name):
         """Returns the relevant property handler for the given property name."""
@@ -1294,6 +1360,18 @@ class Authorizer(object):
           model_key: the key of the model to be deleted
         """
         pass
+    
+    def check_delete_query(self, dispatcher, query_expr, query_params):
+        """Verifies/modifies the given delete query so that it is valid for the user associated with the current
+        request for the given dispatcher.  See check_query() for example usage.
+
+        Args:
+          dispatcher: the dispatcher for the request to be authorized
+          query_expr: currently defined delete query expression, like 'WHERE foo = :1 AND blah = :2', or None for 'query all'
+          query_params: the list of positional query parameters associated with the given query_expr
+        """
+        return query_expr
+
 
 class CachedResponse(object):
     """Simple class used to cache query responses."""
@@ -1333,8 +1411,13 @@ class Dispatcher(webapp.RequestHandler):
                               'default' type used when no type is requested by the caller.  the only supported types
                               are currently JSON_CONTENT_TYPE and XML_CONTENT_TYPE.
 
-       include_docstring_in_schema: whether or not the docstring for a Model should be included in the schema.
-                                    Defaults to False
+        include_docstring_in_schema: whether or not the docstring for a Model should be included in the schema.
+                                     Defaults to False
+                                     
+        enable_delete_query: whether or not query based deletes are supported.  Defaults to False
+                                     
+        enable_delete_all: whether or not 'delete all' queries are supported (only used if enable_delete_query is
+                           True).  Defaults to False
     """
 
     caching = False
@@ -1345,6 +1428,8 @@ class Dispatcher(webapp.RequestHandler):
     authorizer = Authorizer()
     output_content_types = [JSON_CONTENT_TYPE, XML_CONTENT_TYPE]
     include_docstring_in_schema = False
+    enable_delete_query = False
+    enable_delete_all = False
     
     model_handlers = {}
 
@@ -1646,22 +1731,44 @@ class Dispatcher(webapp.RequestHandler):
     def delete(self, *_):
         """Does a REST delete.
         
-        '/<type>/<key>' -> delete Model instance w/ given key (200, 204)
+        '/<type>/<key>'     -> delete Model instance w/ given key (200, 204)
+        '/<type>[?<query>]' -> deletes all Model instances of given type, optionally querying (200, 204)
         
         """
 
         self.authenticator.authenticate(self)
         
-        path = self.split_path(2)
+        path = self.split_path(1)
         model_name = path.pop(0)
-        model_key = path.pop(0)
 
         model_handler = self.get_model_handler(model_name, "DELETE", 204)
 
+        model_key = None
+        model_query = None
+        
+        if (len(path) > 0):
+            model_key = path.pop(0)
+        else:
+            model_query = ModelQuery()
+            model_query.parse(self, model_handler)
+
+            # verify that this type of delete is supported
+            if(not self.enable_delete_query):
+                logging.warning("query based deletes are currently disabled, see 'enable_delete_query' property")
+                raise DispatcherException(404)
+            elif((model_query.query_expr is None) and (not self.enable_delete_all)):
+                logging.warning("'delete all' deletes are currently disabled, see 'enable_delete_all' property")
+                raise DispatcherException(404)
+
         try:
-            model_key = db.Key(model_key)
-            self.authorizer.can_delete(self, model_handler.model_type, model_key)
-            db.delete(model_key)
+            if (model_key is not None):
+                model_key = db.Key(model_key)
+                self.authorizer.can_delete(self, model_handler.model_type, model_key)
+                db.delete(model_key)
+            else:
+                model_query.query_expr = self.authorizer.check_delete_query(self, model_query.query_expr, model_query.query_params)
+                model_handler.delete_all(model_query)
+                
         except Exception:
             logging.warning("delete failed", exc_info=1)
             self.error(204)
@@ -1711,72 +1818,27 @@ class Dispatcher(webapp.RequestHandler):
         parameters.
         """
 
-        cur_fetch_page_size = MAX_FETCH_PAGE_SIZE
-        fetch_offset = 0
-        ordering = None
-        query_expr = None
-        query_params = []
-        
-        for arg in self.request.arguments():
-            if(arg == QUERY_OFFSET_PARAM):
-                fetch_offset = int(self.request.get(QUERY_OFFSET_PARAM))
-                continue
-            
-            if(arg == QUERY_PAGE_SIZE_PARAM):
-                cur_fetch_page_size = int(self.request.get(QUERY_PAGE_SIZE_PARAM))
-                continue
-            
-            if(arg == QUERY_ORDERING_PARAM):
-                ordering = self.request.get(QUERY_ORDERING_PARAM)
-                continue
-
-            if(arg in EXTRA_QUERY_PARAMS):
-                #ignore
-                continue
-            
-            match = QUERY_TERM_PATTERN.match(arg)
-            if(match is None):
-                logging.warning("ignoring unexpected query param %s" % arg)
-                continue
-
-            query_type = match.group(1)
-            query_field = match.group(2)
-            query_sub_expr = QUERY_EXPRS[query_type]
-
-            query_values = self.request.get_all(arg)
-            if(query_type == QUERY_LIST_TYPE):
-                query_values = [v.split(",") for v in query_values]
-
-            query_field, query_values = model_handler.read_query_values(query_field, query_values)
-
-            for value in query_values:
-                query_params.append(value)
-                query_sub_expr = query_sub_expr % (query_field, len(query_params))
-                if(not query_expr):
-                    query_expr = QUERY_PREFIX + query_sub_expr
-                else:
-                    query_expr += QUERY_JOIN + query_sub_expr
-
-        cur_fetch_page_size = max(min(self.fetch_page_size, cur_fetch_page_size, MAX_FETCH_PAGE_SIZE), 1)
+        model_query = ModelQuery()
+        model_query.parse(self, model_handler)
 
         # if possible, attempt to fetch more than we really want so that we can determine if we have more results
-        tmp_fetch_page_size = cur_fetch_page_size
-        if(tmp_fetch_page_size < MAX_FETCH_PAGE_SIZE):
-            tmp_fetch_page_size += 1
+        real_fetch_page_size = model_query.fetch_page_size
+        if(model_query.fetch_page_size < MAX_FETCH_PAGE_SIZE):
+            model_query.fetch_page_size += 1
 
-        query_expr = self.authorizer.check_query(self, query_expr, query_params)
+        model_query.query_expr = self.authorizer.check_query(self, model_query.query_expr, model_query.query_params)
 
-        models = model_handler.get_all(tmp_fetch_page_size, fetch_offset, ordering, query_expr, query_params)
+        models = model_handler.get_all(model_query)
 
-        next_fetch_offset = str(cur_fetch_page_size + fetch_offset)
-        if((tmp_fetch_page_size > cur_fetch_page_size) and (len(models) < tmp_fetch_page_size)):
+        next_fetch_offset = str(real_fetch_page_size + model_query.fetch_offset)
+        if(len(models) < model_query.fetch_page_size):
             next_fetch_offset = ""
 
         list_props[QUERY_OFFSET_PARAM] = next_fetch_offset
         
         # trim list to the actual size we want
-        if(len(models) > cur_fetch_page_size):
-            models = models[0:cur_fetch_page_size]
+        if(len(models) > real_fetch_page_size):
+            models = models[0:real_fetch_page_size]
 
         models = self.authorizer.filter_read(self, models)
 
