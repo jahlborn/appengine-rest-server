@@ -58,12 +58,18 @@ import cgi
 import pickle
 
 from google.appengine.api import memcache
-from google.appengine.ext import webapp
 from google.appengine.ext import db
 from google.appengine.ext import blobstore
 from django.utils import simplejson
 from xml.dom import minidom
 from datetime import datetime
+
+# compatibility w/ python27 & webapp2
+try:
+    import webapp2 as webapp
+except ImportError:
+    from google.appengine.ext import webapp
+
 
 def get_instance_type_name(value):
     """Returns the name of the type of the given instance."""
@@ -1433,8 +1439,12 @@ class Dispatcher(webapp.RequestHandler):
     
     model_handlers = {}
 
-    def __init__(self):
-        super(Dispatcher, self).__init__()
+    def __init__(self, request=None, response=None):
+        # compatibility w/ python27 & webapp2
+        if((request is None) and (response is None)):
+            super(Dispatcher, self).__init__()
+        else:
+            super(Dispatcher, self).__init__(request, response)
 
     def add_models_from_module(cls, model_module, use_module_name=False, exclude_model_types=None,
                                model_methods=ALL_MODEL_METHODS, recurse=False):
