@@ -60,9 +60,14 @@ import pickle
 from google.appengine.api import memcache
 from google.appengine.ext import db
 from google.appengine.ext import blobstore
-from django.utils import simplejson
 from xml.dom import minidom
 from datetime import datetime
+
+# use faster json if available
+try:
+    import json
+except ImportError:    
+    from django.utils import simplejson as json
 
 # compatibility w/ python27 & webapp2
 try:
@@ -382,7 +387,7 @@ def xml_to_json(xml_doc):
     doc_el = xml_doc.documentElement
     json_doc = {doc_el.nodeName : xml_node_to_json(doc_el)}
 
-    return simplejson.dumps(json_doc)
+    return json.dumps(json_doc)
 
 def xml_node_to_json(xml_node):
     if((len(xml_node.childNodes) == 1) and
@@ -418,7 +423,7 @@ def xml_node_to_json(xml_node):
         return json_node
 
 def json_to_xml(json_doc):
-    json_node = simplejson.load(json_doc)
+    json_node = json.load(json_doc)
 
     impl = minidom.getDOMImplementation()
     doc_el_name = json_node.keys()[0]
