@@ -937,12 +937,34 @@ class ListHandler(PropertyHandler):
         finally:
             doc.unlink()
 
+# Dynamic Property: "values for query"
+# Coerce basic Python types from strings.
+DYN_FLOAT_RE = re.compile(r"^[+-]?[0-9]+[.][0-9]+$")
+DYN_INTEGER_RE = re.compile(r"^[+-]?[0-9]+$")
+# Date-time and Time:
+# datetime == "2012-01-31T22:00:01"
+# date     == "2012-01-31"
+# time     == "22:00:01"
+DYN_DATETIME_RE = re.compile(r"^\d{4}[-]\d{2}[-]\d{2}T\d{2}[:]\d{2}[:]\d{2}$")
+DYN_DATE_RE = re.compile(r"^\d{4}[-]\d{2}[-]\d{2}$")
+DYN_TIME_RE = re.compile(r"^\d{2}[:]\d{2}[:]\d{2}$")
+# TODO: complex, ...
                 
 class DynamicPropertyHandler(object):
     """PropertyHandler for dynamic properties on Expando models."""
     
     def __init__(self, property_name):
         self.property_name = property_name
+
+    def get_query_field(self):
+        """Returns the field name which should be used to query this property."""
+        return self.property_name
+
+    def can_query(self):
+        """Dynamic properties can be used in query filters.
+        However, only fields with the datatype of the query value would match.
+        """
+        return True
 
     def write_xml_value(self, parent_el, prop_xml_name, model, blob_info_format):
         """Returns the property value from the given model instance converted to an xml element (with a type
@@ -965,6 +987,30 @@ class DynamicPropertyHandler(object):
             return
 
         props[self.property_name] = get_node_text(prop_el.childNodes)
+
+    def value_for_query(self, value):
+        """Returns the value for this property from the given string value (may be None), for use in a query filter.
+        Coerce the string value to a basic Python type, and let the Property subclass validate it further."""
+        if value is None:
+            query_value = None
+        elif (value[0] == "'" or  value[0] == '"') and value[0] == value[-1]:
+            # Quoted values do not get coerced, e.g. "-4".
+            query_value = unicode(value[1:-1])
+        # Python type coercions:
+        elif DYN_FLOAT_RE.match(value.strip()):
+            query_value = float(value)
+        elif DYN_INTEGER_RE.match(value.strip()):
+            query_value = int(value)
+        elif DYN_DATETIME_RE.match(value.strip()):
+            query_value = parse_date_time(value.strip(), DATE_TIME_FORMAT_NO_MS, datetime, True)
+        elif DYN_TIME_RE.match(value.strip()):
+            query_value = parse_date_time(value.strip(), TIME_FORMAT_NO_MS, datetime.time, True)
+        elif DYN_DATE_RE.match(value.strip()):
+            query_value = parse_date_time(value.strip(), DATE_FORMAT, datetime.date, True)
+        else:
+            # keep as a string.
+            query_value = unicode(value)
+        return query_value
 
     def get_handler(self, property_type, value):
         """Returns the relevant PropertyHandler based on the given property_type string or property value."""
