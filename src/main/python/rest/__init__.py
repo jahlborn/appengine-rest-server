@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c) 2008 Boomi, Inc.
+# Copyright (c) 2012 Boomi, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,6 +60,7 @@ import pickle
 from google.appengine.api import memcache
 from google.appengine.ext import db
 from google.appengine.ext import blobstore
+from google.appengine.api import namespace_manager
 from xml.dom import minidom
 from datetime import datetime
 
@@ -115,6 +116,7 @@ INDEXED_ATTR_NAME = "indexed"
 MULTILINE_ATTR_NAME = "multiline"
 VERBOSENAME_ATTR_NAME = "verbose_name"
 REFERENCECLASS_ATTR_NAME = "reference_class"
+MODELNS_ATTR_NAME = "model_ns"
 ITEM_EL_NAME = "item"
 
 DATA_TYPE_SEPARATOR = ":"
@@ -168,6 +170,7 @@ XSD_LAX_CONTENTS = "lax"
 XSD_NO_MIN = "0"
 XSD_SINGLE_MAX = "1"
 XSD_NO_MAX = "unbounded"
+XSD_NORMAL_STR = XSD_PREFIX + ":normalizedString"
 BLOBINFO_TYPE_NAME = "BlobInfo"
 
 REST_MD_URI = "uri:com.boomi.rest"
@@ -181,6 +184,12 @@ REST_MD_ITEM_NAME = REST_MD_PREFIX + ":item"
 
 ALL_MODEL_METHODS = frozenset(["GET", "POST", "PUT", "DELETE", "GET_METADATA"])
 READ_ONLY_MODEL_METHODS = frozenset(["GET", "GET_METADATA"])
+
+READ_EXT_NS = "READ"
+WRITE_EXT_NS = "WRITE"
+HIDDEN_EXT_NAMESPACES = frozenset([])
+READ_ONLY_EXT_NAMESPACES = frozenset([READ_EXT_NS])
+FULL_EXT_NAMESPACES = frozenset([READ_EXT_NS, WRITE_EXT_NS])
 
 QUERY_OFFSET_PARAM = "offset"
 QUERY_PAGE_SIZE_PARAM = "page_size"
@@ -252,7 +261,7 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.BooleanProperty) : XSD_PREFIX + ":boolean",
     get_type_name(db.IntegerProperty) : XSD_PREFIX + ":long",
     get_type_name(db.FloatProperty) : XSD_PREFIX + ":double",
-    get_type_name(db.ReferenceProperty) : XSD_PREFIX + ":normalizedString",
+    get_type_name(db.ReferenceProperty) : XSD_NORMAL_STR,
     get_type_name(db.DateTimeProperty) : XSD_PREFIX + ":dateTime",
     get_type_name(db.DateProperty) : XSD_PREFIX + ":date",
     get_type_name(db.TimeProperty) : XSD_PREFIX + ":time",
@@ -260,16 +269,16 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.ByteStringProperty) : XSD_PREFIX + ":base64Binary",
     get_type_name(blobstore.BlobReferenceProperty) : BLOBINFO_TYPE_NAME,
     get_type_name(db.TextProperty) : XSD_PREFIX + ":string",
-    get_type_name(db.UserProperty) : XSD_PREFIX + ":normalizedString",
-    get_type_name(db.CategoryProperty) : XSD_PREFIX + ":normalizedString",
+    get_type_name(db.UserProperty) : XSD_NORMAL_STR,
+    get_type_name(db.CategoryProperty) : XSD_NORMAL_STR,
     get_type_name(db.LinkProperty) : XSD_PREFIX + ":anyURI",
-    get_type_name(db.EmailProperty) : XSD_PREFIX + ":normalizedString",
-    get_type_name(db.GeoPtProperty) : XSD_PREFIX + ":normalizedString",
-    get_type_name(db.IMProperty) : XSD_PREFIX + ":normalizedString",
-    get_type_name(db.PhoneNumberProperty) : XSD_PREFIX + ":normalizedString",
-    get_type_name(db.PostalAddressProperty) : XSD_PREFIX + ":normalizedString",
+    get_type_name(db.EmailProperty) : XSD_NORMAL_STR,
+    get_type_name(db.GeoPtProperty) : XSD_NORMAL_STR,
+    get_type_name(db.IMProperty) : XSD_NORMAL_STR,
+    get_type_name(db.PhoneNumberProperty) : XSD_NORMAL_STR,
+    get_type_name(db.PostalAddressProperty) : XSD_NORMAL_STR,
     get_type_name(db.RatingProperty) : XSD_PREFIX + ":integer",
-    KEY_PROPERTY_TYPE_NAME : XSD_PREFIX + ":normalizedString"
+    KEY_PROPERTY_TYPE_NAME : XSD_NORMAL_STR
     }
 
 class KeyPseudoType(object):
@@ -362,11 +371,11 @@ def xsd_append_element(parent_el, name, prop_type_name, min_occurs, max_occurs):
         element_el.attributes[XSD_ATTR_MAXOCCURS] = max_occurs
     return element_el
     
-def xsd_append_attribute(parent_el, name, prop_type_name):
+def xsd_append_attribute(parent_el, name, prop_type_name, def_type=None):
     """Returns an XML Schema attribute with the given attributes appended to the given parent element."""
     attr_el = append_child(parent_el, XSD_ATTRIBUTE_NAME)
     attr_el.attributes[NAME_ATTR_NAME] = name
-    type_name = PROPERTY_TYPE_TO_XSD_TYPE.get(prop_type_name, None)
+    type_name = PROPERTY_TYPE_TO_XSD_TYPE.get(prop_type_name, def_type)
     if type_name:
         attr_el.attributes[TYPE_ATTR_NAME] = type_name
     return attr_el
@@ -767,7 +776,7 @@ class BlobReferenceHandler(BaseReferenceHandler):
             blob_type_el = append_child(schema_el, XSD_COMPLEXTYPE_NAME)
             blob_type_el.attributes[NAME_ATTR_NAME] = BLOBINFO_TYPE_NAME
             ext_el = append_child(append_child(blob_type_el, XSD_SIMPLECONTENT_NAME), XSD_EXTENSION_NAME)
-            ext_el.attributes[BASE_ATTR_NAME] = XSD_PREFIX + ":normalizedString"
+            ext_el.attributes[BASE_ATTR_NAME] = XSD_NORMAL_STR
             for prop_xml_name, prop_handler in BLOBINFO_PROP_HANDLERS.iteritems():
                 xsd_append_attribute(ext_el, prop_xml_name, prop_handler.get_type_string())
         
@@ -1227,6 +1236,15 @@ class ModelHandler(object):
         
     def write_xml_value(self, model_el, model, blob_info_format, includeProps):
         """Appends the properties of the given instance as xml elements to the given model element."""
+
+        # if namespaces are readable externally, set relevant attr
+        if READ_EXT_NS in Dispatcher.external_namespaces:
+            model_ns = None
+            if model.is_saved():
+                model_ns = model.key().namespace()
+            if model_ns:
+                model_el.attributes[MODELNS_ATTR_NAME] = model_ns
+
         # write key property first
         if((includeProps is None) or (KEY_PROPERTY_NAME in includeProps)):
             self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, blob_info_format)
@@ -1269,6 +1287,11 @@ class ModelHandler(object):
             any_el.attributes[XSD_ATTR_PROCESSCONTENTS] = XSD_LAX_CONTENTS
             any_el.attributes[XSD_ATTR_MINOCCURS] = XSD_NO_MIN
             any_el.attributes[XSD_ATTR_MAXOCCURS] = XSD_NO_MAX
+
+        if READ_EXT_NS in Dispatcher.external_namespaces:
+            xsd_append_attribute(seq_el.parentNode, MODELNS_ATTR_NAME, None, XSD_NORMAL_STR)
+            
+            
 
 # static collection of property handlers for BlobInfo types (because BlobInfo.properties() is a set not a dict)
 BLOBINFO_PROP_HANDLERS = {
@@ -1475,6 +1498,17 @@ class Dispatcher(webapp.RequestHandler):
                                      
         enable_delete_all: whether or not 'delete all' queries are supported (only used if enable_delete_query is
                            True).  Defaults to False
+
+        external_namespaces: a set of values which control how namespaces are handled external to the handler.  The
+                             allowabled values in the set are zero or more of READ and WRITE.  If READ is specified,
+                             model namespaces will be included in outgoing models.  If WRITE is specified, callers are
+                             allowed to specify namespaces in the url (otherwise, caller specified namespaces will
+                             cause a 404).  Regardless of these settings, the programmer is free to utilize namespaces
+                             interally to the application.  If namespaces are being used for multi-tenancy support,
+                             this property alone is not sufficient protection against data leaks (as namespace
+                             information is included in keys).  Secure multi-tenant implementations should have an
+                             Authorizer which checks all model namespaces (an example NamespaceAuthorizer is provided
+                             in the wiki).  Defaults to hidden external namespaces (empty set)
     """
 
     caching = False
@@ -1487,6 +1521,7 @@ class Dispatcher(webapp.RequestHandler):
     include_docstring_in_schema = False
     enable_delete_query = False
     enable_delete_all = False
+    external_namespaces = HIDDEN_EXT_NAMESPACES
     
     model_handlers = {}
 
@@ -1645,6 +1680,7 @@ class Dispatcher(webapp.RequestHandler):
             
         else:
             model_handler = self.get_model_handler(model_name, "GET")
+            model_name = model_handler.model_name
 
             list_props = {}
             if (len(path) > 0):
@@ -1733,6 +1769,7 @@ class Dispatcher(webapp.RequestHandler):
         """
         
         model_handler = self.get_model_handler(model_name, method_name)
+        model_name = model_handler.model_name
 
         is_list = False
         models = []
@@ -1803,6 +1840,7 @@ class Dispatcher(webapp.RequestHandler):
         model_name = path.pop(0)
 
         model_handler = self.get_model_handler(model_name, "DELETE", 204)
+        model_name = model_handler.model_name
 
         model_key = None
         model_query = None
@@ -1853,6 +1891,7 @@ class Dispatcher(webapp.RequestHandler):
             if model_name:
                 
                 model_handler = self.get_model_handler(model_name, "GET_METADATA")
+                model_name = model_handler.model_name
 
                 self.authorizer.can_read_metadata(self, model_name)
 
@@ -1918,6 +1957,17 @@ class Dispatcher(webapp.RequestHandler):
     def get_model_handler(self, model_name, method_name, failure_code=404):
         """Returns the ModelHandler with the given name, or None (and sets the error code given) if there is no
         handler with the given name."""
+
+        # see if namespace was specified, e.g. "<ns>.<model_name>"
+        ns_model_name = model_name.rpartition(".")
+        if(ns_model_name[0]):
+            # only set namespace if callers are allowed to
+            if WRITE_EXT_NS not in self.external_namespaces:
+                raise DispatcherException(404)
+            namespace_manager.set_namespace(ns_model_name[0])
+            # remove namespace from model name
+            model_name = ns_model_name[2]
+        
         try:
             model_handler = self.model_handlers[model_name]
         except KeyError:
