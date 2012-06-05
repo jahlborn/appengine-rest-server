@@ -300,20 +300,20 @@ KEY_PROPERTY_TYPE = KeyPseudoType()
 
 def parse_date_time(dt_str, dt_format, dt_type, allows_microseconds):
     """Returns a datetime/date/time instance parsed from the given string using the given format info."""
-    ms = None
+    micros = None
     if(allows_microseconds):
         dt_parts = dt_str.rsplit(".", 1)
         dt_str = dt_parts.pop(0)
         if(len(dt_parts) > 0):
-            ms = int(dt_parts[0].ljust(6,"0")[:6])
-    dt = datetime.strptime(dt_str, dt_format)
-    if(ms):
-        dt = dt.replace(microsecond=ms)
+            micros = int(dt_parts[0].ljust(6,"0")[:6])
+    dtime = datetime.strptime(dt_str, dt_format)
+    if(micros):
+        dtime = dtime.replace(microsecond=micros)
     if(dt_type is datetime.date):
-        dt = dt.date()
+        dtime = dtime.date()
     elif(dt_type is datetime.time):
-        dt = dt.time()
-    return dt
+        dtime = dtime.time()
+    return dtime
     
 def convert_to_valid_xml_name(name):
     """Converts a string to a valid xml element name."""
@@ -323,11 +323,11 @@ def convert_to_valid_xml_name(name):
 def append_child(parent_el, name, content=None):
     """Returns a new xml element with the given name and optional text content appended to the given parent element."""
     doc = parent_el.ownerDocument
-    el = doc.createElement(name)
-    parent_el.appendChild(el)
+    elm = doc.createElement(name)
+    parent_el.appendChild(elm)
     if content:
-        el.appendChild(doc.createTextNode(content))
-    return el
+        elm.appendChild(doc.createTextNode(content))
+    return elm
 
 def xsd_append_sequence(parent_el):
     """Returns an XML Schema sub-sequence (complex type, then sequence) appended to the given parent element."""
@@ -351,6 +351,7 @@ def xsd_append_rest_metadata(annotation_el):
     return element_el
 
 def xsd_append_choices(parent_el, prop_handler, choices):
+    """Appends a list of choice metadata elements."""
     choice_parent = append_child(parent_el, REST_MD_CHOICES_NAME)
     
     for choice in choices:
@@ -393,12 +394,14 @@ def get_node_text(node_list, do_strip=False):
     return text
 
 def xml_to_json(xml_doc):
+    """Returns a serialized json doc string generated from the given xml doc."""
     doc_el = xml_doc.documentElement
     json_doc = {doc_el.nodeName : xml_node_to_json(doc_el)}
 
     return json.dumps(json_doc)
 
 def xml_node_to_json(xml_node):
+    """Returns a json node generated from the given xml element."""
     if((len(xml_node.childNodes) == 1) and
        (xml_node.childNodes[0].nodeType == xml_node.TEXT_NODE)):
         if(len(xml_node.attributes) == 0):
@@ -432,6 +435,7 @@ def xml_node_to_json(xml_node):
         return json_node
 
 def json_to_xml(json_doc):
+    """Returns an xml document generated from the given json doc."""
     json_node = json.load(json_doc)
 
     impl = minidom.getDOMImplementation()
@@ -441,6 +445,7 @@ def json_to_xml(json_doc):
     return xml_doc
 
 def json_node_to_xml(xml_node, json_node):
+    """Appends an xml node generated from the given json node to the given xml node."""
     doc = xml_node.ownerDocument
     if(isinstance(json_node, (basestring, int, long, float, complex, bool))):
         xml_node.appendChild(doc.createTextNode(unicode(json_node)))
@@ -1097,7 +1102,7 @@ class ModelQuery(object):
             
             match = QUERY_TERM_PATTERN.match(arg)
             if(match is None):
-                logging.warning("ignoring unexpected query param %s" % arg)
+                logging.warning("ignoring unexpected query param %s", arg)
                 continue
 
             query_type = match.group(1)
@@ -1234,7 +1239,7 @@ class ModelHandler(object):
         else:
             return prop_handler.value_for_query(prop_query_value)        
         
-    def write_xml_value(self, model_el, model, blob_info_format, includeProps):
+    def write_xml_value(self, model_el, model, blob_info_format, include_props):
         """Appends the properties of the given instance as xml elements to the given model element."""
 
         # if namespaces are readable externally, set relevant attr
@@ -1246,18 +1251,18 @@ class ModelHandler(object):
                 model_el.attributes[MODELNS_ATTR_NAME] = model_ns
 
         # write key property first
-        if((includeProps is None) or (KEY_PROPERTY_NAME in includeProps)):
+        if((include_props is None) or (KEY_PROPERTY_NAME in include_props)):
             self.write_xml_property(model_el, model, KEY_PROPERTY_NAME, self.key_handler, blob_info_format)
 
         # write static properties next
         for prop_xml_name, prop_handler in self.property_handlers.iteritems():
-            if((includeProps is None) or (prop_xml_name in includeProps)):
+            if((include_props is None) or (prop_xml_name in include_props)):
                 self.write_xml_property(model_el, model, prop_xml_name, prop_handler, blob_info_format)
                 
         # write dynamic properties last
         for prop_name in model.dynamic_properties():
             prop_xml_name = convert_to_valid_xml_name(prop_name)
-            if((includeProps is None) or (prop_xml_name in includeProps)):
+            if((include_props is None) or (prop_xml_name in include_props)):
                 self.write_xml_property(model_el, model, prop_xml_name, DynamicPropertyHandler(prop_name),
                                         blob_info_format)
 
@@ -1460,6 +1465,7 @@ class CachedResponse(object):
         self.content_type = content_type
 
     def write_output(self, dispatcher):
+        """Writes this cached response to the current response output of the dispatcher."""
         dispatcher.response.out.write(self.out)
         dispatcher.response.headers[CONTENT_TYPE_HEADER] = self.content_type
 
@@ -1552,9 +1558,9 @@ class Dispatcher(webapp.RequestHandler):
           recurse: True to recurse into sub-modules when searching for Models, False otherwise
           
         """
-        logging.info("adding models from module %s" % model_module)
+        logging.info("adding models from module %s", model_module)
         if(not exclude_model_types):
-            exclude_model_types=[]
+            exclude_model_types = []
         if(isinstance(model_module, basestring)):
             model_module = __import__(model_module)
         module_name = ""
@@ -1611,7 +1617,7 @@ class Dispatcher(webapp.RequestHandler):
         if(not issubclass(model_type, db.Model)):
             raise ValueError("given model type %s is not a subclass of Model" % model_type)
         cls.model_handlers[xml_name] = ModelHandler(model_name, model_type, model_methods)
-        logging.info("added model %s with type %s for methods %s" % (model_name, model_type, model_methods))
+        logging.info("added model %s with type %s for methods %s", model_name, model_type, model_methods)
             
     add_models_from_module = classmethod(add_models_from_module)
     add_models = classmethod(add_models)
@@ -1649,7 +1655,7 @@ class Dispatcher(webapp.RequestHandler):
                 if self.response.disp_cache_resp_:
                     cached_response = pickle.dumps(CachedResponse(self.response.out.getvalue(), self.response.disp_out_type_))
                     if not memcache.set(self.request.url, cached_response, self.cache_time):
-                        logging.warning("memcache set failed for %s" % self.request.url)
+                        logging.warning("memcache set failed for %s", self.request.url)
         else:
             self.get_impl()
 
@@ -1971,7 +1977,7 @@ class Dispatcher(webapp.RequestHandler):
         try:
             model_handler = self.model_handlers[model_name]
         except KeyError:
-            logging.error("invalid model name %s" % model_name, exc_info=1)
+            logging.error("invalid model name %s", model_name, exc_info=1)
             raise DispatcherException(failure_code)
 
         if method_name not in model_handler.model_methods:
@@ -1980,7 +1986,7 @@ class Dispatcher(webapp.RequestHandler):
         return model_handler
 
     def doc_to_output(self, doc):
-
+        """Returns the given xml doc serialized using the appropriate response format."""
         out_mime_type = self.request.accept.best_match(self.output_content_types)
         if(out_mime_type == JSON_CONTENT_TYPE):
             self.response.disp_out_type_ = JSON_CONTENT_TYPE
@@ -1989,7 +1995,7 @@ class Dispatcher(webapp.RequestHandler):
         return doc.toxml(XML_ENCODING)
 
     def input_to_xml(self):
-
+        """Returns the request doc converted into an xml doc."""
         content_type = self.request.headers.get(CONTENT_TYPE_HEADER, None)
         if((content_type != None) and content_type.startswith(JSON_CONTENT_TYPE)):
             return json_to_xml(self.request.body_file)
@@ -1998,9 +2004,9 @@ class Dispatcher(webapp.RequestHandler):
     def models_to_xml(self, model_name, model_handler, models, list_props=None):
         """Returns a string of xml of the given models (may be list or single instance)."""
         blob_info_format = self.get_query_param(QUERY_BLOBINFO_PARAM, QUERY_BLOBINFO_TYPE_KEY)
-        includeProps = self.get_query_param(QUERY_INCLUDEPROPS_PARAM)
-        if(includeProps is not None):
-            includeProps = includeProps.split(",")
+        include_props = self.get_query_param(QUERY_INCLUDEPROPS_PARAM)
+        if(include_props is not None):
+            include_props = include_props.split(",")
 
         impl = minidom.getDOMImplementation()
         doc = None
@@ -2013,10 +2019,10 @@ class Dispatcher(webapp.RequestHandler):
                     
                 for model in models:
                     model_el = append_child(list_el, model_name)
-                    model_handler.write_xml_value(model_el, model, blob_info_format, includeProps)
+                    model_handler.write_xml_value(model_el, model, blob_info_format, include_props)
             else:
                 doc = impl.createDocument(None, model_name, None)
-                model_handler.write_xml_value(doc.documentElement, models, blob_info_format, includeProps)
+                model_handler.write_xml_value(doc.documentElement, models, blob_info_format, include_props)
 
             return self.doc_to_output(doc)
         finally:
@@ -2186,18 +2192,21 @@ class Dispatcher(webapp.RequestHandler):
             super(Dispatcher, self).handle_exception(exception, debug_mode)
 
     def get_query_params(self):
+        """Returns the parsed request url query params as a dict."""
         # lazy (re)parse query params
         if(self.request.disp_query_params_ is None):
             self.request.disp_query_params_ = cgi.parse_qs(self.request.query_string)
         return self.request.disp_query_params_
 
     def get_query_param(self, key, default=None):
+        """Returns the request url query param for the given key, defaulting to the given default if not found."""
         value = self.get_query_params().get(key, None)
         if(value is None):
             return default
         return value[0]
 
     def set_response_content_type(self, content_type_default, content_type_preferred=None):
+        """Sets the response content-type header based on the request and the given info."""
         content_type = content_type_preferred
         if((not content_type) or (content_type.find("*") >= 0)):
             content_type = self.request.accept.best_matches()[0]
