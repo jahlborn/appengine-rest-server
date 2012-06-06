@@ -195,6 +195,7 @@ READ_ONLY_EXT_NAMESPACES = frozenset([READ_EXT_NS])
 FULL_EXT_NAMESPACES = frozenset([READ_EXT_NS, WRITE_EXT_NS])
 
 QUERY_OFFSET_PARAM = "offset"
+QUERY_CURSOR_PREFIX = "c_"
 QUERY_PAGE_SIZE_PARAM = "page_size"
 QUERY_ORDERING_PARAM = "ordering"
 QUERY_TERM_PATTERN = re.compile(r"^(f.._)(.+)$")
@@ -1203,18 +1204,23 @@ class ModelQuery(object):
 
     def __init__(self):
         self.fetch_page_size = MAX_FETCH_PAGE_SIZE
-        self.fetch_offset = 0
+        self.fetch_offset = None
+        self.fetch_cursor = None
         self.ordering = None
         self.query_expr = None
         self.query_params = []
+        self.next_fetch_offset = ""
 
     def parse(self, dispatcher, model_handler):
         """Parses the current request into a query."""
 
         for arg in dispatcher.request.arguments():
             if(arg == QUERY_OFFSET_PARAM):
-                self.fetch_offset = int(
-                    dispatcher.request.get(QUERY_OFFSET_PARAM))
+                query_offset = str(dispatcher.request.get(QUERY_OFFSET_PARAM))
+                if query_offset[0:2] == QUERY_CURSOR_PREFIX:
+                    self.fetch_cursor = query_offset[2:]
+                else:
+                    self.fetch_offset = int(query_offset)
                 continue
 
             if(arg == QUERY_PAGE_SIZE_PARAM):
@@ -1313,6 +1319,15 @@ class ModelHandler(object):
     def get_all(self, model_query):
         """Returns all model instances of this type matching the given
         query."""
+
+        if model_query.fetch_offset is not None:
+            # if possible, attempt to fetch more than we really want so that
+            # we can determine if we have more results.  this trick is only
+            # possible if fetching w/ offsets
+            real_fetch_page_size = model_query.fetch_page_size
+            if(model_query.fetch_page_size < MAX_FETCH_PAGE_SIZE):
+                model_query.fetch_page_size += 1
+
         if(model_query.query_expr is None):
             query = self.model_type.all()
             if(model_query.ordering):
@@ -1328,8 +1343,34 @@ class ModelHandler(object):
             query = self.model_type.gql(model_query.query_expr,
                                         *model_query.query_params)
 
-        return query.fetch(model_query.fetch_page_size,
-                           model_query.fetch_offset)
+        if model_query.fetch_offset is None:
+            if model_query.fetch_cursor:
+                query.with_cursor(model_query.fetch_cursor)
+
+            models = query.fetch(model_query.fetch_page_size)
+
+            if(len(models) == model_query.fetch_page_size):
+                try:
+                    model_query.next_fetch_offset = (QUERY_CURSOR_PREFIX +
+                                                     query.cursor())
+                except AssertionError:
+                    # some queries don't allow cursors, fallback to offsets
+                    model_query.next_fetch_offset = str(
+                        model_query.fetch_page_size)
+
+        else:
+            models = query.fetch(model_query.fetch_page_size,
+                                 model_query.fetch_offset)
+
+            if(len(models) >= model_query.fetch_page_size):
+                model_query.next_fetch_offset = str(real_fetch_page_size +
+                                                    model_query.fetch_offset)
+
+            # trim list to the actual size we want
+            if(len(models) > real_fetch_page_size):
+                models = models[0:real_fetch_page_size]
+
+        return models
 
     def delete_all(self, model_query):
         """Deletes all model instances of this type matching the given
@@ -2190,27 +2231,12 @@ class Dispatcher(webapp.RequestHandler):
         model_query = ModelQuery()
         model_query.parse(self, model_handler)
 
-        # if possible, attempt to fetch more than we really want so that we
-        # can determine if we have more results
-        real_fetch_page_size = model_query.fetch_page_size
-        if(model_query.fetch_page_size < MAX_FETCH_PAGE_SIZE):
-            model_query.fetch_page_size += 1
-
         model_query.query_expr = self.authorizer.check_query(
             self, model_query.query_expr, model_query.query_params)
 
         models = model_handler.get_all(model_query)
 
-        next_fetch_offset = str(real_fetch_page_size +
-                                model_query.fetch_offset)
-        if(len(models) < model_query.fetch_page_size):
-            next_fetch_offset = ""
-
-        list_props[QUERY_OFFSET_PARAM] = next_fetch_offset
-
-        # trim list to the actual size we want
-        if(len(models) > real_fetch_page_size):
-            models = models[0:real_fetch_page_size]
+        list_props[QUERY_OFFSET_PARAM] = model_query.next_fetch_offset
 
         models = self.authorizer.filter_read(self, models)
 
