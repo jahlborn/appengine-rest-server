@@ -202,8 +202,10 @@ QUERY_TERM_PATTERN = re.compile(r"^(f.._)(.+)$")
 QUERY_PREFIX = "WHERE "
 QUERY_JOIN = " AND "
 QUERY_ORDERBY = " ORDER BY "
-QUERY_ORDER_ASC = " ASC"
-QUERY_ORDER_DESC = " DESC"
+QUERY_ORDER_SUFFIXES = [" ASC", " DESC"]
+QUERY_ORDER_PREFIXES = ["", "-"]
+QUERY_ORDER_ASC_IDX = 0
+QUERY_ORDER_DSC_IDX = 1
 QUERY_LIST_TYPE = "fin_"
 
 QUERY_TYPE_PARAM = "type"
@@ -295,6 +297,7 @@ class KeyPseudoType(object):
         self.required = True
         self.choices = None
         self.indexed = True
+        self.name = KEY_PROPERTY_NAME
 
     def empty(self, value):
         """Returns True if the value is any value which evaluates to False,
@@ -509,6 +512,9 @@ class PropertyHandler(object):
     def __init__(self, property_name, property_type,
                  property_content_type=TEXT_CONTENT_TYPE):
         self.property_name = property_name
+        self.storage_name = None
+        if self.property_name != property_type.name:
+            self.storage_name = property_type.name
         self.property_type = property_type
         self.property_content_type = property_content_type
 
@@ -521,7 +527,7 @@ class PropertyHandler(object):
     def get_query_field(self):
         """Returns the field name which should be used to query this
         property."""
-        return self.property_name
+        return self.property_type.name
 
     def can_query(self):
         """Returns True if this property can be used as a query filter, False
@@ -1081,6 +1087,7 @@ class DynamicPropertyHandler(object):
 
     def __init__(self, property_name):
         self.property_name = property_name
+        self.storage_name = None
 
     def get_query_field(self):
         """Returns the field name which should be used to query this
@@ -1207,6 +1214,7 @@ class ModelQuery(object):
         self.fetch_offset = None
         self.fetch_cursor = None
         self.ordering = None
+        self.order_type_idx = QUERY_ORDER_ASC_IDX
         self.query_expr = None
         self.query_params = []
         self.next_fetch_offset = ""
@@ -1229,7 +1237,16 @@ class ModelQuery(object):
                 continue
 
             if(arg == QUERY_ORDERING_PARAM):
-                self.ordering = dispatcher.request.get(QUERY_ORDERING_PARAM)
+                ordering_field = dispatcher.request.get(QUERY_ORDERING_PARAM)
+                if(ordering_field[0] == "-"):
+                    ordering_field = ordering_field[1:]
+                    self.order_type_idx = QUERY_ORDER_DSC_IDX
+                prop_handler = model_handler.get_property_handler(
+                    ordering_field)
+                if(not prop_handler.can_query()):
+                    raise KeyError("Can not order on property %s" %
+                                   ordering_field)
+                self.ordering = prop_handler.get_query_field()
                 continue
 
             if(arg in EXTRA_QUERY_PARAMS):
@@ -1314,6 +1331,16 @@ class ModelHandler(object):
     def create(self, props):
         """Returns a newly created model instance with the given properties
         (as a keyword dict)."""
+
+        # convert property names to storage names, since the Model
+        # constructor seems to expect properties using the storage name
+        # (blech!)
+        for prop_handler in self.property_handlers.itervalues():
+            if(prop_handler.storage_name and
+               (prop_handler.property_name in props)):
+                props[prop_handler.storage_name] = props.pop(
+                    prop_handler.property_name)
+
         return self.model_type(**props)
 
     def get_all(self, model_query):
@@ -1331,15 +1358,13 @@ class ModelHandler(object):
         if(model_query.query_expr is None):
             query = self.model_type.all()
             if(model_query.ordering):
-                query.order(model_query.ordering)
+                query.order(QUERY_ORDER_PREFIXES[model_query.order_type_idx] +
+                            model_query.ordering)
         else:
             if(model_query.ordering):
-                order_type = QUERY_ORDER_ASC
-                ordering = model_query.ordering
-                if(ordering[0] == "-"):
-                    ordering = ordering[1:]
-                    order_type = QUERY_ORDER_DESC
-                model_query.query_expr += QUERY_ORDERBY + ordering + order_type
+                model_query.query_expr += (
+                    QUERY_ORDERBY + model_query.ordering +
+                    QUERY_ORDER_SUFFIXES[model_query.order_type_idx])
             query = self.model_type.gql(model_query.query_expr,
                                         *model_query.query_params)
 
