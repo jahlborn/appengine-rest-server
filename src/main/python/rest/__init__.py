@@ -1428,7 +1428,12 @@ class ModelHandler(object):
         for prop_node in model_el.childNodes:
             if(prop_node.nodeType != prop_node.ELEMENT_NODE):
                 continue
-            self.get_property_handler(prop_node.nodeName).read_xml_value(
+            prop_xml_name = prop_node.nodeName
+            if prop_xml_name[0] == "_":
+                # ignore incoming properties which start with underscore,
+                # since this is an invalid property name anyway
+                continue
+            self.get_property_handler(prop_xml_name).read_xml_value(
                 props, prop_node)
 
         return props
