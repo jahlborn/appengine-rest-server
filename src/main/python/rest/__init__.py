@@ -2571,7 +2571,8 @@ class Dispatcher(webapp.RequestHandler):
             if((not content_type) or (content_type.find("*") >= 0)):
                 content_type = content_type_default
         self.response.headers[CONTENT_TYPE_HEADER] = content_type
-
+        self.disp_out_type_ = content_type
+    
     def forbidden(self):
         """Convenience method which raises a DispatcherException with a 403
         error code."""
