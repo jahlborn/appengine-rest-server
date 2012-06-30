@@ -287,6 +287,11 @@ PROPERTY_TYPE_TO_XSD_TYPE = {
     get_type_name(db.RatingProperty): XSD_PREFIX + ":integer",
     KEY_PROPERTY_TYPE_NAME: XSD_NORMAL_STR}
 
+PROPERTY_TYPE_TO_JSON_TYPE = {
+    get_type_name(db.IntegerProperty): long,
+    get_type_name(db.FloatProperty): float,
+    get_type_name(db.RatingProperty): long}
+
 
 class KeyPseudoType(object):
     """Fake PropertyType class for the KeyHandler class."""
@@ -332,14 +337,17 @@ def convert_to_valid_xml_name(name):
     return re.sub(XML_CLEANSE_PATTERN2, XML_CLEANSE_REPL2, name)
 
 
-def append_child(parent_el, name, content=None):
+def append_child(parent_el, name, content=None, meta=None):
     """Returns a new xml element with the given name and optional text content
     appended to the given parent element."""
     doc = parent_el.ownerDocument
     elm = doc.createElement(name)
     parent_el.appendChild(elm)
     if content:
-        elm.appendChild(doc.createTextNode(content))
+        txt_node = doc.createTextNode(content)
+        elm.appendChild(txt_node)
+        if meta:
+            txt_node.disp_meta_ = meta
     return elm
 
 
@@ -435,15 +443,14 @@ def xml_node_to_json(xml_node):
     """Returns a json node generated from the given xml element."""
     if((len(xml_node.childNodes) == 1) and
        (xml_node.childNodes[0].nodeType == xml_node.TEXT_NODE)):
+        txt_node = xml_node.childNodes[0]
+        txt_value = json_value(txt_node, txt_node.data)
         if(len(xml_node.attributes) == 0):
-            return xml_node.childNodes[0].data
+            return txt_value
         else:
             json_node = {}
-            json_node[JSON_TEXT_KEY] = xml_node.childNodes[0].data
-            xml_node_attrs = xml_node.attributes
-            for attr_name in xml_node_attrs.keys():
-                json_node[JSON_ATTR_PREFIX + attr_name] = (
-                    xml_node_attrs[attr_name].nodeValue)
+            json_node[JSON_TEXT_KEY] = txt_value
+            xml_attrs_to_json(xml_node, json_node)
             return json_node
     else:
         json_node = {}
@@ -461,12 +468,28 @@ def xml_node_to_json(xml_node):
                 cur_child_json_node.append(new_child_json_node)
             json_node[child_xml_node.nodeName] = cur_child_json_node
 
-        xml_node_attrs = xml_node.attributes
-        for attr_name in xml_node_attrs.keys():
-            json_node[JSON_ATTR_PREFIX + attr_name] = (
-                xml_node_attrs[attr_name].nodeValue)
+        xml_attrs_to_json(xml_node, json_node)
 
         return json_node
+
+
+def xml_attrs_to_json(xml_node, json_node):
+    """Adds any attributes of the given xml node to the given json node."""
+    xml_node_attrs = xml_node.attributes
+    for attr_name in xml_node_attrs.keys():
+        attr_node = xml_node_attrs[attr_name]
+        json_node[JSON_ATTR_PREFIX + attr_name] = (
+            json_value(attr_node, attr_node.nodeValue))
+
+
+def json_value(xml_node, xml_node_value):
+    """Returns the given xml node's value as the appropriate json type."""
+    if hasattr(xml_node, "disp_meta_"):
+        json_type = PROPERTY_TYPE_TO_JSON_TYPE.get(
+            get_instance_type_name(xml_node.disp_meta_))
+        if(json_type):
+            xml_node_value = json_type(xml_node_value)
+    return xml_node_value
 
 
 def json_to_xml(json_doc):
@@ -595,7 +618,8 @@ class PropertyHandler(object):
         value = self.get_value_as_string(model)
         if(value is EMPTY_VALUE):
             return None
-        return append_child(parent_el, prop_xml_name, value)
+        return append_child(parent_el, prop_xml_name, value,
+                            self.property_type)
 
     def read_xml_value(self, props, prop_el):
         """Adds the value for this property to the given property dict
@@ -841,6 +865,8 @@ class BlobReferenceHandler(BaseReferenceHandler):
                     attr_value = prop_handler.get_value_as_string(blob_info)
                     if(attr_value is not EMPTY_VALUE):
                         blob_el.attributes[prop_xml_name] = attr_value
+                        blob_el.attributes[prop_xml_name].disp_meta_ = (
+                            prop_handler.property_type)
 
         return blob_el
 
@@ -963,7 +989,8 @@ class ListHandler(PropertyHandler):
         list_el = append_child(parent_el, prop_xml_name)
         for value in values:
             append_child(list_el, ITEM_EL_NAME,
-                         self.sub_handler.value_to_string(value))
+                         self.sub_handler.value_to_string(value),
+                         self.sub_handler.property_type)
         return list_el
 
     def read_xml_value(self, props, prop_el):
@@ -1034,7 +1061,8 @@ class ListHandler(PropertyHandler):
             if(value):
                 for val in value:
                     append_child(doc.documentElement, ITEM_EL_NAME,
-                                 self.sub_handler.value_to_string(val))
+                                 self.sub_handler.value_to_string(val),
+                                 self.sub_handler.property_type)
             dispatcher.write_output(dispatcher.doc_to_output(doc))
         finally:
             if doc:
@@ -2571,8 +2599,8 @@ class Dispatcher(webapp.RequestHandler):
             if((not content_type) or (content_type.find("*") >= 0)):
                 content_type = content_type_default
         self.response.headers[CONTENT_TYPE_HEADER] = content_type
-        self.disp_out_type_ = content_type
-    
+        self.response.disp_out_type_ = content_type
+
     def forbidden(self):
         """Convenience method which raises a DispatcherException with a 403
         error code."""
