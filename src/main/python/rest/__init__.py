@@ -1747,12 +1747,20 @@ class Authorizer(object):
 class CachedResponse(object):
     """Simple class used to cache query responses."""
 
-    def __init__(self, out, content_type):
+    def __init__(self, out, content_type, accept):
         if not COMPAT_WEBAPP2:
             self.out = out.getvalue()
         else:
             self.out = out.body
         self.content_type = content_type
+        self.accept = unicode(accept)
+
+    def matches_request(self, request):
+        """Checks if the given request acceptably matches the request which
+        generated this cached response."""
+        # for now we just require the "accept" header to match in order to use
+        # a cached response
+        return self.accept == unicode(request.accept)
 
     def write_output(self, dispatcher):
         """Writes this cached response to the current response output of the
@@ -1978,24 +1986,31 @@ class Dispatcher(webapp.RequestHandler):
 
         self.authenticator.authenticate(self)
 
-        if self.caching:
-            cached_response = memcache.get(self.request.url)
-            if cached_response:
-                cached_response = pickle.loads(cached_response)
-                cached_response.write_output(self)
-            else:
-                self.get_impl()
-                # don't cache blobinfo content requests
-                if self.response.disp_cache_resp_:
-                    cached_response = pickle.dumps(
-                        CachedResponse(self.response.out,
-                                       self.response.disp_out_type_))
-                    if not memcache.set(self.request.url, cached_response,
-                                        self.cache_time):
-                        logging.warning("memcache set failed for %s",
-                                        self.request.url)
-        else:
+        if not self.caching:
             self.get_impl()
+            return
+
+        # attempt to return cached response
+        cached_response = memcache.get(self.request.url)
+        if cached_response:
+            cached_response = pickle.loads(cached_response)
+            # only use cache response if the requests match
+            if cached_response.matches_request(self.request):
+                cached_response.write_output(self)
+                return
+
+        self.get_impl()
+
+        # don't cache blobinfo content requests
+        if self.response.disp_cache_resp_:
+            cached_response = pickle.dumps(
+                CachedResponse(self.response.out,
+                               self.response.disp_out_type_,
+                               self.request.accept))
+            if not memcache.set(self.request.url, cached_response,
+                                self.cache_time):
+                logging.warning("memcache set failed for %s",
+                                self.request.url)
 
     def get_impl(self):
         """Actual implementation of REST get.  Gets metadata (types,
