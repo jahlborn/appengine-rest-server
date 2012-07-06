@@ -74,8 +74,10 @@ except ImportError:
 # compatibility w/ python27 & webapp2
 try:
     import webapp2 as webapp
+    COMPAT_WEBAPP2 = True
 except ImportError:
     from google.appengine.ext import webapp
+    COMPAT_WEBAPP2 = False
 
 
 def get_instance_type_name(value):
@@ -1746,7 +1748,10 @@ class CachedResponse(object):
     """Simple class used to cache query responses."""
 
     def __init__(self, out, content_type):
-        self.out = out
+        if not COMPAT_WEBAPP2:
+            self.out = out.getvalue()
+        else:
+            self.out = out.body
         self.content_type = content_type
 
     def write_output(self, dispatcher):
@@ -1837,8 +1842,7 @@ class Dispatcher(webapp.RequestHandler):
     model_handlers = {}
 
     def __init__(self, request=None, response=None):
-        # compatibility w/ python27 & webapp2
-        if((request is None) and (response is None)):
+        if not COMPAT_WEBAPP2:
             super(Dispatcher, self).__init__()
         else:
             super(Dispatcher, self).__init__(request, response)
@@ -1984,7 +1988,7 @@ class Dispatcher(webapp.RequestHandler):
                 # don't cache blobinfo content requests
                 if self.response.disp_cache_resp_:
                     cached_response = pickle.dumps(
-                        CachedResponse(self.response.out.getvalue(),
+                        CachedResponse(self.response.out,
                                        self.response.disp_out_type_))
                     if not memcache.set(self.request.url, cached_response,
                                         self.cache_time):
