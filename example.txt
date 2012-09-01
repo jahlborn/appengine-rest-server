@@ -199,6 +199,9 @@ Request:
 - Result (default):
 aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA
 
+- Result (with "?type=structured" in url):
+<?xml version="1.0" encoding="utf-8"?><key>aglndWVzdGJvb2tyEgsSDER5bm9HcmVldGluZxgEDA</key>
+
 - Result (with "?type=full" in url):
 Complete current version of the new Greeting instance.
 
