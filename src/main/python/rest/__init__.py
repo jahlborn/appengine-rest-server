@@ -1976,9 +1976,11 @@ class Dispatcher(webapp.RequestHandler):
 
     def initialize(self, request, response):
         super(Dispatcher, self).initialize(request, response)
-        request.disp_query_params_ = None
-        response.disp_cache_resp_ = True
-        response.disp_out_type_ = TEXT_CONTENT_TYPE
+        if request:
+            request.disp_query_params_ = None
+        if response:
+            response.disp_cache_resp_ = True
+            response.disp_out_type_ = TEXT_CONTENT_TYPE
 
     def get(self, *_):
         """Does a REST get, optionally using memcache to cache results.  See
