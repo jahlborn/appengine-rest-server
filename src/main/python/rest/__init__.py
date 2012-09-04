@@ -2201,10 +2201,18 @@ class Dispatcher(webapp.RequestHandler):
             self.write_output(self.models_to_xml(model_name, model_handler,
                                                  models))
         elif ((resp_type == QUERY_TYPE_STRUCTURED) or
-              (resp_type == QUERY_TYPE_XML)):
+              (resp_type == QUERY_TYPE_XML) or
+              self.request_structured_output()):
             self.write_output(self.keys_to_xml(model_handler, models))
         else:
             self.write_output(self.keys_to_text(models))
+
+    def request_structured_output(self):
+        """Returns True if the request explicitly requested structured output
+        (xml or json) via the accept header."""
+        out_mime_type = unicode(self.request.accept)
+        return ((out_mime_type == XML_CONTENT_TYPE) or
+                (out_mime_type == JSON_CONTENT_TYPE))
 
     def delete(self, *_):
         """Does a REST delete.
