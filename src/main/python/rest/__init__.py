@@ -1147,10 +1147,8 @@ class DynamicPropertyHandler(object):
         """Adds the value for this property to the given property dict
         converted from an xml element, either as a StringProperty value if no
         type attribute exists or as the type given in a type attribute."""
-        attrs = prop_el.attributes
-
-        if(TYPE_ATTR_NAME in attrs):
-            prop_type = str(attrs[TYPE_ATTR_NAME].value)
+        if(prop_el.hasAttribute(TYPE_ATTR_NAME)):
+            prop_type = str(prop_el.attributes[TYPE_ATTR_NAME].value)
             self.get_handler(prop_type, None).read_xml_value(props, prop_el)
             return
 
