@@ -57,6 +57,7 @@ import re
 import base64
 import cgi
 import pickle
+import os
 
 from google.appengine.api import memcache
 from google.appengine.ext import db
@@ -73,7 +74,11 @@ except ImportError:
 
 # compatibility w/ python27 & webapp2
 try:
-    import webapp2 as webapp
+    # we only get the _real_ webapp2 in python27
+    if os.environ.get('APPENGINE_RUNTIME') == 'python27':
+        import webapp2 as webapp
+    else:
+        raise ImportError("no webapp2 available")
     COMPAT_WEBAPP2 = True
 except ImportError:
     from google.appengine.ext import webapp
@@ -523,6 +528,12 @@ def json_node_to_xml(xml_node, json_node):
                 for json_node_list_value in json_node_value:
                     child_node = append_child(xml_node, json_node_name)
                     json_node_to_xml(child_node, json_node_list_value)
+
+
+def is_list_type(obj):
+    """Returns True if the given obj is a 'list' type of some sort, False
+    otherwise."""
+    return isinstance(obj, (types.ListType, types.TupleType))
 
 
 class PropertyHandler(object):
@@ -1485,7 +1496,7 @@ class ModelHandler(object):
     def read_query_value(self, prop_handler, prop_query_value):
         """Returns a query value from the given query property handler and
         value (may be a list)."""
-        if isinstance(prop_query_value, (types.ListType, types.TupleType)):
+        if is_list_type(prop_query_value):
             return [prop_handler.value_for_query(v) for v in prop_query_value]
         else:
             return prop_handler.value_for_query(prop_query_value)
@@ -1745,13 +1756,15 @@ class Authorizer(object):
 class CachedResponse(object):
     """Simple class used to cache query responses."""
 
-    def __init__(self, out, content_type, accept):
+    def __init__(self, dispatcher):
+        request = dispatcher.request
+        response = dispatcher.response
         if not COMPAT_WEBAPP2:
-            self.out = out.getvalue()
+            self.out = response.out.getvalue()
         else:
-            self.out = out.body
-        self.content_type = content_type
-        self.accept = unicode(accept)
+            self.out = response.out.body
+        self.content_type = response.disp_out_type_
+        self.accept = unicode(request.accept)
 
     def matches_request(self, request):
         """Checks if the given request acceptably matches the request which
@@ -1839,7 +1852,12 @@ class Dispatcher(webapp.RequestHandler):
     fetch_page_size = 50
     authenticator = Authenticator()
     authorizer = Authorizer()
-    output_content_types = [JSON_CONTENT_TYPE, XML_CONTENT_TYPE]
+    if not COMPAT_WEBAPP2:
+        # webapp picks the default as the last option
+        output_content_types = [JSON_CONTENT_TYPE, XML_CONTENT_TYPE]
+    else:
+        # webapp2 picks the default as the first option
+        output_content_types = [XML_CONTENT_TYPE, JSON_CONTENT_TYPE]
     include_docstring_in_schema = False
     enable_delete_query = False
     enable_delete_all = False
@@ -1920,7 +1938,7 @@ class Dispatcher(webapp.RequestHandler):
 
         """
         for model_name, model_type in models.iteritems():
-            if isinstance(model_type, (types.ListType, types.TupleType)):
+            if is_list_type(model_type):
                 # Assume we have format:
                 # {model_name : (ModelClass, [model_method_1, model_method_2])}
                 model_methods = model_type[1]
@@ -2003,10 +2021,7 @@ class Dispatcher(webapp.RequestHandler):
 
         # don't cache blobinfo content requests
         if self.response.disp_cache_resp_:
-            cached_response = pickle.dumps(
-                CachedResponse(self.response.out,
-                               self.response.disp_out_type_,
-                               self.request.accept))
+            cached_response = pickle.dumps(CachedResponse(self))
             if not memcache.set(self.request.url, cached_response,
                                 self.cache_time):
                 logging.warning("memcache set failed for %s",
@@ -2394,7 +2409,7 @@ class Dispatcher(webapp.RequestHandler):
         impl = minidom.getDOMImplementation()
         doc = None
         try:
-            if isinstance(models, (types.ListType, types.TupleType)):
+            if is_list_type(models):
                 doc = impl.createDocument(None, LIST_EL_NAME, None)
                 list_el = doc.documentElement
                 if((list_props is not None) and
@@ -2422,7 +2437,7 @@ class Dispatcher(webapp.RequestHandler):
         impl = minidom.getDOMImplementation()
         doc = None
         try:
-            if isinstance(models, (types.ListType, types.TupleType)):
+            if is_list_type(models):
                 doc = impl.createDocument(None, LIST_EL_NAME, None)
                 list_el = doc.documentElement
 
@@ -2443,7 +2458,7 @@ class Dispatcher(webapp.RequestHandler):
     def keys_to_text(self, models):
         """Returns a string of text of the keys of the given models (may be
         list or single instance)."""
-        if(not isinstance(models, (types.ListType, types.TupleType))):
+        if(not is_list_type(models)):
             models = [models]
         return unicode(",".join([str(model.key()) for model in models]))
 
