@@ -1379,12 +1379,13 @@ class ModelHandler(object):
             self.hash_model(model)
         return model
 
-    def put(self, model):
+    @classmethod
+    def put(cls, model):
         """Saves a new/updated model instance."""
         model.put()
         if Dispatcher.enable_etags:
             # compute the new etag for the modified instance
-            self.hash_model(model, True)
+            cls.hash_model(model, True)
 
     def create(self, props):
         """Returns a newly created model instance with the given properties
@@ -1596,15 +1597,17 @@ class ModelHandler(object):
             xsd_append_attribute(seq_el.parentNode, ETAG_ATTR_NAME, None,
                                  XSD_NORMAL_STR)
 
-    def hash_model(self, model, force_rehash=False):
+    @classmethod
+    def hash_model(cls, model, force_rehash=False):
         """Returns a hash of the model, suitable for an etag value."""
         # after computing the hash, we store it on the model for future
         # retrieval (useful if the model is later modified)
         if((not hasattr(model, "model_hash_")) or force_rehash):
-            model.model_hash_ = self.hash_model_impl(model)
+            model.model_hash_ = cls.hash_model_impl(model)
         return model.model_hash_
 
-    def hash_model_impl(self, model):
+    @classmethod
+    def hash_model_impl(cls, model):
         """Returns a hash of the model, suitable for an etag value."""
         # if entity versions are available, use them
         entity_version = metadata.get_entity_group_version(model)
@@ -1945,6 +1948,7 @@ class Dispatcher(webapp.RequestHandler):
         else:
             super(Dispatcher, self).__init__(request, response)
 
+    @classmethod
     def add_models_from_module(cls, model_module, use_module_name=False,
                                exclude_model_types=None,
                                model_methods=ALL_MODEL_METHODS, recurse=False):
@@ -1998,6 +2002,7 @@ class Dispatcher(webapp.RequestHandler):
                 model_name = module_name + get_type_name(obj)
                 cls.add_model(model_name, obj, model_methods)
 
+    @classmethod
     def add_models(cls, models, model_methods=ALL_MODEL_METHODS):
         """Adds the given models from the given dict to this request handler.
         The key (with invalid characters converted to the '_' character) will
@@ -2020,6 +2025,7 @@ class Dispatcher(webapp.RequestHandler):
 
             cls.add_model(model_name, model_type, model_methods)
 
+    @classmethod
     def add_model(cls, model_name, model_type,
                   model_methods=ALL_MODEL_METHODS):
         """Adds the given model to this request handler.  The name (with
@@ -2049,10 +2055,6 @@ class Dispatcher(webapp.RequestHandler):
                                                     model_methods)
         logging.info("added model %s with type %s for methods %s", model_name,
                      model_type, model_methods)
-
-    add_models_from_module = classmethod(add_models_from_module)
-    add_models = classmethod(add_models)
-    add_model = classmethod(add_model)
 
     ##
     # Error codes used in this handler:
@@ -2281,7 +2283,7 @@ class Dispatcher(webapp.RequestHandler):
         self.update_if_match(model_handler, models)
 
         for model in models:
-            model_handler.put(model)
+            ModelHandler.put(model)
 
         self.get_if_none_match(model_handler, models)
 
@@ -2550,20 +2552,24 @@ class Dispatcher(webapp.RequestHandler):
                     if model:
                         models.append(model)
 
-            if(self.models_to_hash(model_handler, models) in self.request.if_match):
+            if(self.models_to_hash(model_handler, models) in
+               self.request.if_match):
                 # provided per-collection header, which matches
                 return
-            
+
             for model in models:
-                if(model_hash_to_str(model_handler.hash_model(model)) not in self.request.if_match):
+                if(model_hash_to_str(ModelHandler.hash_model(model)) not in
+                   self.request.if_match):
                     # provided per-model header, which does not match
                     self.is_modified()
 
         elif(models is not None):
-            # see if caller provided per-model etags in the models themselves (as attributes)
+            # see if caller provided per-model etags in the models themselves
+            # (as attributes)
             for model in models:
                 if(hasattr(model, "in_model_hash_") and
-                   (model.in_model_hash_ != model_hash_to_str(model_handler.hash_model(model)))):
+                   (model.in_model_hash_ !=
+                    model_hash_to_str(ModelHandler.hash_model(model)))):
                     # provided per-model attribute, which does not match
                     self.is_modified()
 
@@ -2576,9 +2582,9 @@ class Dispatcher(webapp.RequestHandler):
                (QUERY_OFFSET_PARAM in list_props)):
                 model_hash = model_hash ^ hash(list_props[QUERY_OFFSET_PARAM])
             for model in models:
-                model_hash = model_hash ^ model_handler.hash_model(model)
+                model_hash = model_hash ^ ModelHandler.hash_model(model)
         else:
-            model_hash = model_hash ^ model_handler.hash_model(models)
+            model_hash = model_hash ^ ModelHandler.hash_model(models)
 
         return model_hash_to_str(model_hash)
 
@@ -2653,8 +2659,10 @@ class Dispatcher(webapp.RequestHandler):
             model = model_handler.create(props)
 
         # check for model specific etag attribute
-        if(self.enable_etags and (model_el.attributes.get(ETAG_ATTR_NAME, None) is not None)):
-            model.in_model_hash_ = str(model_el.attributes[ETAG_ATTR_NAME].value)
+        if(self.enable_etags and
+           (model_el.attributes.get(ETAG_ATTR_NAME, None) is not None)):
+            model.in_model_hash_ = str(
+                model_el.attributes[ETAG_ATTR_NAME].value)
 
         return model
 
@@ -2748,7 +2756,7 @@ class Dispatcher(webapp.RequestHandler):
             # not returned until after the redirect)
             self.authorizer.can_write(self, model, False)
 
-            model_handler.put(model)
+            ModelHandler.put(model)
 
             # redirect will be a GET, so we need to send the caller to a
             # special url, so they can get output which looks like what would
