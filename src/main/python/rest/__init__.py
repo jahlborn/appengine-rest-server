@@ -63,6 +63,7 @@ from google.appengine.api import memcache
 from google.appengine.ext import db
 from google.appengine.ext import blobstore
 from google.appengine.api import namespace_manager
+from google.appengine.ext.db import metadata
 from xml.dom import minidom
 from datetime import datetime
 
@@ -119,6 +120,7 @@ LIST_EL_NAME = "list"
 TYPE_ATTR_NAME = "type"
 NAME_ATTR_NAME = "name"
 BASE_ATTR_NAME = "base"
+ETAG_ATTR_NAME = "etag"
 PROPERTY_ATTR_NAME = "property"
 REQUIRED_ATTR_NAME = "required"
 DEFAULT_ATTR_NAME = "default"
@@ -147,6 +149,7 @@ METHOD_OVERRIDE_HEADER = "X-HTTP-Method-Override"
 RANGE_HEADER = "Range"
 BINARY_CONTENT_TYPE = "application/octet-stream"
 FORMDATA_CONTENT_TYPE = "multipart/form-data"
+ETAG_HEADER = "ETag"
 
 JSON_TEXT_KEY = "#text"
 JSON_ATTR_PREFIX = "@"
@@ -534,6 +537,11 @@ def is_list_type(obj):
     """Returns True if the given obj is a 'list' type of some sort, False
     otherwise."""
     return isinstance(obj, (types.ListType, types.TupleType))
+
+
+def model_hash_to_str(model_hash):
+    """Returns the model hash int as an encoded string."""
+    return base64.b64encode(str(model_hash)).strip('=')
 
 
 class PropertyHandler(object):
@@ -1365,7 +1373,18 @@ class ModelHandler(object):
 
     def get(self, key):
         """Returns the model instance with the given key."""
-        return self.model_type.get(key)
+        model = self.model_type.get(key)
+        if model and Dispatcher.enable_etags:
+            # compute pristine hash before any modifications are made
+            self.hash_model(model)
+        return model
+
+    def put(self, model):
+        """Saves a new/updated model instance."""
+        model.put()
+        if Dispatcher.enable_etags:
+            # compute the new etag for the modified instance
+            self.hash_model(model, True)
 
     def create(self, props):
         """Returns a newly created model instance with the given properties
@@ -1514,6 +1533,11 @@ class ModelHandler(object):
             if model_ns:
                 model_el.attributes[MODELNS_ATTR_NAME] = model_ns
 
+        # add etag attr if enabled
+        if Dispatcher.enable_etags:
+            model_el.attributes[ETAG_ATTR_NAME] = model_hash_to_str(
+                self.hash_model(model))
+
         # write key property first
         if((include_props is None) or (KEY_PROPERTY_NAME in include_props)):
             self.write_xml_property(model_el, model, KEY_PROPERTY_NAME,
@@ -1567,6 +1591,40 @@ class ModelHandler(object):
         if READ_EXT_NS in Dispatcher.external_namespaces:
             xsd_append_attribute(seq_el.parentNode, MODELNS_ATTR_NAME, None,
                                  XSD_NORMAL_STR)
+
+        if Dispatcher.enable_etags:
+            xsd_append_attribute(seq_el.parentNode, ETAG_ATTR_NAME, None,
+                                 XSD_NORMAL_STR)
+
+    def hash_model(self, model, force_rehash=False):
+        """Returns a hash of the model, suitable for an etag value."""
+        # after computing the hash, we store it on the model for future
+        # retrieval (useful if the model is later modified)
+        if((not hasattr(model, "model_hash_")) or force_rehash):
+            model.model_hash_ = self.hash_model_impl(model)
+        return model.model_hash_
+
+    def hash_model_impl(self, model):
+        """Returns a hash of the model, suitable for an etag value."""
+        # if entity versions are available, use them
+        entity_version = metadata.get_entity_group_version(model)
+        if entity_version:
+            return entity_version
+
+        # otherwise, create hash of all model props (and key)
+        model_hash = 0
+        for prop_key, prop_value in db.to_dict(model).iteritems():
+            prop_hash = hash(prop_key)
+            if is_list_type(prop_value):
+                for idx in range(0, len(prop_value)):
+                    prop_hash += (idx * hash(prop_value[idx]))
+            else:
+                prop_hash += hash(prop_value)
+            model_hash = model_hash ^ prop_hash
+
+        model_hash = model_hash ^ (hash(KEY_PROPERTY_NAME) + hash(model.key()))
+
+        return model_hash
 
 
 # static collection of property handlers for BlobInfo types (because
@@ -1765,6 +1823,8 @@ class CachedResponse(object):
             self.out = response.out.body
         self.content_type = response.disp_out_type_
         self.accept = unicode(request.accept)
+        if Dispatcher.enable_etags:
+            self.etag = response.headers[ETAG_HEADER]
 
     def matches_request(self, request):
         """Checks if the given request acceptably matches the request which
@@ -1773,11 +1833,19 @@ class CachedResponse(object):
         # a cached response
         return self.accept == unicode(request.accept)
 
+    def is_not_modified(self, dispatcher):
+        """Checks if the cache response is unmodified with respect to the
+        given request."""
+        return (Dispatcher.enable_etags and
+                (self.etag.strip('"') in dispatcher.request.if_none_match))
+
     def write_output(self, dispatcher):
         """Writes this cached response to the current response output of the
         dispatcher."""
         dispatcher.response.out.write(self.out)
         dispatcher.response.headers[CONTENT_TYPE_HEADER] = self.content_type
+        if self.etag:
+            dispatcher.response.headers[ETAG_HEADER] = self.etag
 
 
 class Dispatcher(webapp.RequestHandler):
@@ -1844,6 +1912,11 @@ class Dispatcher(webapp.RequestHandler):
                              (an example NamespaceAuthorizer is provided in
                              the wiki).  Defaults to hidden external
                              namespaces (empty set)
+
+        enable_etags: whether or not etags (and related) headers are sent and
+                      honored.  if enabled, 'If-Match' will be checked on sets
+                      and 'If-None-Match' will be checked on gets.
+                      Defaults to False
     """
 
     caching = False
@@ -1862,6 +1935,7 @@ class Dispatcher(webapp.RequestHandler):
     enable_delete_query = False
     enable_delete_all = False
     external_namespaces = HIDDEN_EXT_NAMESPACES
+    enable_etags = False
 
     model_handlers = {}
 
@@ -2014,6 +2088,8 @@ class Dispatcher(webapp.RequestHandler):
             cached_response = pickle.loads(cached_response)
             # only use cache response if the requests match
             if cached_response.matches_request(self.request):
+                if cached_response.is_not_modified(self):
+                    self.not_modified()
                 cached_response.write_output(self)
                 return
 
@@ -2071,6 +2147,7 @@ class Dispatcher(webapp.RequestHandler):
                     prop_name = path.pop(0)
                     prop_handler = model_handler.get_property_handler(
                         prop_name)
+                    self.get_if_none_match(model_handler, models)
                     prop_value = prop_handler.get_value(models)
                     prop_handler.value_to_response(self, prop_name, prop_value,
                                                    path)
@@ -2081,6 +2158,8 @@ class Dispatcher(webapp.RequestHandler):
 
             if models is None:
                 self.not_found()
+
+            self.get_if_none_match(model_handler, models, list_props)
 
             out = self.models_to_xml(model_name, model_handler, models,
                                      list_props)
@@ -2199,8 +2278,12 @@ class Dispatcher(webapp.RequestHandler):
         elif (len(models) > 0):
             self.authorizer.can_write(self, models[0], is_replace)
 
+        self.update_if_match(model_handler, models)
+
         for model in models:
-            model.put()
+            model_handler.put(model)
+
+        self.get_if_none_match(model_handler, models)
 
         # if input was not a list, convert single element models list back to
         # single element
@@ -2269,13 +2352,17 @@ class Dispatcher(webapp.RequestHandler):
                 model_key = db.Key(model_key)
                 self.authorizer.can_delete(self, model_handler.model_type,
                                            model_key)
+                self.update_if_match(model_handler, None, (model_key,))
                 db.delete(model_key)
             else:
                 model_query.query_expr = self.authorizer.check_delete_query(
                     self, model_query.query_expr, model_query.query_params)
                 model_handler.delete_all(model_query)
 
-        except Exception:
+        except Exception, ex:
+            if(isinstance(ex, DispatcherException) and (ex.error_code == 412)):
+                # we want to throw pre-condition failures
+                raise ex
             logging.warning("delete failed", exc_info=1)
             self.error(204)
 
@@ -2431,6 +2518,70 @@ class Dispatcher(webapp.RequestHandler):
             if doc:
                 doc.unlink()
 
+    def get_if_none_match(self, model_handler, models, list_props=None):
+        """Handles the 'If-None-Match' header for retrieving data, either
+        setting the outgoing ETag header or returning the not modified
+        response code as appropriate.  Does nothing if etag support is not
+        enabled."""
+        if not self.enable_etags:
+            return
+
+        model_hash = self.models_to_hash(model_handler, models, list_props)
+        if model_hash in self.request.if_none_match:
+            self.not_modified()
+        self.response.headers[ETAG_HEADER] = '"%s"' % model_hash
+
+    def update_if_match(self, model_handler, models, model_keys=None):
+        """Handles the 'If-Match' header for modifying data, either allowing
+        the update to proceed or returning the precondition failed response
+        code as appropriate.  Does nothing if etag support is not enabled."""
+        if not self.enable_etags:
+            return
+
+        if('*' not in self.request.if_match):
+            # caller provided an if-match header (which may be a per-model
+            # list or an all-collection value)
+
+            if(model_keys is not None):
+                # first need to convert keys to models
+                models = []
+                for model_key in model_keys:
+                    model = model_handler.get(model_key)
+                    if model:
+                        models.append(model)
+
+            if(self.models_to_hash(model_handler, models) in self.request.if_match):
+                # provided per-collection header, which matches
+                return
+            
+            for model in models:
+                if(model_hash_to_str(model_handler.hash_model(model)) not in self.request.if_match):
+                    # provided per-model header, which does not match
+                    self.is_modified()
+
+        elif(models is not None):
+            # see if caller provided per-model etags in the models themselves (as attributes)
+            for model in models:
+                if(hasattr(model, "in_model_hash_") and
+                   (model.in_model_hash_ != model_hash_to_str(model_handler.hash_model(model)))):
+                    # provided per-model attribute, which does not match
+                    self.is_modified()
+
+    def models_to_hash(self, model_handler, models, list_props=None):
+        """Returns an aggregate hash for a collection of models, including any
+        query offset parameter if available."""
+        model_hash = 0
+        if is_list_type(models):
+            if((list_props is not None) and
+               (QUERY_OFFSET_PARAM in list_props)):
+                model_hash = model_hash ^ hash(list_props[QUERY_OFFSET_PARAM])
+            for model in models:
+                model_hash = model_hash ^ model_handler.hash_model(model)
+        else:
+            model_hash = model_hash ^ model_handler.hash_model(models)
+
+        return model_hash_to_str(model_hash)
+
     def keys_to_xml(self, model_handler, models):
         """Returns a string of xml of the keys of the given models (may be
         list or single instance)."""
@@ -2500,6 +2651,10 @@ class Dispatcher(webapp.RequestHandler):
 
         else:
             model = model_handler.create(props)
+
+        # check for model specific etag attribute
+        if(self.enable_etags and (model_el.attributes.get(ETAG_ATTR_NAME, None) is not None)):
+            model.in_model_hash_ = str(model_el.attributes[ETAG_ATTR_NAME].value)
 
         return model
 
@@ -2593,7 +2748,7 @@ class Dispatcher(webapp.RequestHandler):
             # not returned until after the redirect)
             self.authorizer.can_write(self, model, False)
 
-            model.put()
+            model_handler.put(model)
 
             # redirect will be a GET, so we need to send the caller to a
             # special url, so they can get output which looks like what would
@@ -2611,7 +2766,11 @@ class Dispatcher(webapp.RequestHandler):
         if(isinstance(exception, DispatcherException)):
             # if None, assume thrower has configured the response appropriately
             if(exception.error_code is not None):
-                self.error(exception.error_code)
+                if(exception.error_code < 400):
+                    self.response.clear()
+                    self.response.set_status(exception.error_code)
+                else:
+                    self.error(exception.error_code)
         else:
             super(Dispatcher, self).handle_exception(exception, debug_mode)
 
@@ -2652,3 +2811,14 @@ class Dispatcher(webapp.RequestHandler):
         """Convenience method which raises a DispatcherException with a 404
         error code."""
         raise DispatcherException(404)
+
+    def not_modified(self):
+        """Convenience method which raises a DispatcherException with a 304
+        status code."""
+        self.response.headers[CONTENT_TYPE_HEADER] = TEXT_CONTENT_TYPE
+        raise DispatcherException(304)
+
+    def is_modified(self):
+        """Convenience method which raises a DispatcherException with a 412
+        error code."""
+        raise DispatcherException(412)
