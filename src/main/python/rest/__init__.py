@@ -364,7 +364,8 @@ def append_child(parent_el, name, content=None, meta=None):
 def mark_list_node(xml_node):
     """Marks an xml element as the parent node of a list of elements.  Useful
     for getting consistent json output for list contents."""
-    xml_node.disp_meta_ = LIST_EL_NAME return xml_node
+    xml_node.disp_meta_ = LIST_EL_NAME
+    return xml_node
 
 
 def xsd_append_sequence(parent_el):
