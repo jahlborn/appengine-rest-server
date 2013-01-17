@@ -361,6 +361,12 @@ def append_child(parent_el, name, content=None, meta=None):
     return elm
 
 
+def mark_list_node(xml_node):
+    """Marks an xml element as the parent node of a list of elements.  Useful
+    for getting consistent json output for list contents."""
+    xml_node.disp_meta_ = LIST_EL_NAME return xml_node
+
+
 def xsd_append_sequence(parent_el):
     """Returns an XML Schema sub-sequence (complex type, then sequence)
     appended to the given parent element."""
@@ -465,11 +471,15 @@ def xml_node_to_json(xml_node):
     else:
         json_node = {}
 
+        force_list = (hasattr(xml_node, "disp_meta_") and
+                      xml_node.disp_meta_ == LIST_EL_NAME)
         for child_xml_node in xml_node.childNodes:
             new_child_json_node = xml_node_to_json(child_xml_node)
             cur_child_json_node = json_node.get(child_xml_node.nodeName, None)
             if(cur_child_json_node is None):
                 cur_child_json_node = new_child_json_node
+                if(force_list):
+                    cur_child_json_node = [cur_child_json_node]
             else:
                 # if we have more than one of the same type, turn the children
                 # into a list
@@ -1007,7 +1017,7 @@ class ListHandler(PropertyHandler):
         values = self.get_value(model)
         if(not values):
             return None
-        list_el = append_child(parent_el, prop_xml_name)
+        list_el = mark_list_node(append_child(parent_el, prop_xml_name))
         for value in values:
             append_child(list_el, ITEM_EL_NAME,
                          self.sub_handler.value_to_string(value),
@@ -1054,7 +1064,8 @@ class ListHandler(PropertyHandler):
                 unicode(prop_type.verbose_name))
 
         # list properties always have at least an empty list as default
-        default_el = append_child(element_el, REST_MD_DEFAULT_NAME)
+        default_el = mark_list_node(
+            append_child(element_el, REST_MD_DEFAULT_NAME))
         if prop_type.default is not None:
             for val in prop_type.default:
                 append_child(default_el, ITEM_EL_NAME,
@@ -1080,8 +1091,9 @@ class ListHandler(PropertyHandler):
         try:
             doc = impl.createDocument(None, prop_xml_name, None)
             if(value):
+                list_el = mark_list_node(doc.documentElement)
                 for val in value:
-                    append_child(doc.documentElement, ITEM_EL_NAME,
+                    append_child(list_el, ITEM_EL_NAME,
                                  self.sub_handler.value_to_string(val),
                                  self.sub_handler.property_type)
             dispatcher.write_output(dispatcher.doc_to_output(doc))
@@ -2500,7 +2512,7 @@ class Dispatcher(webapp.RequestHandler):
         try:
             if is_list_type(models):
                 doc = impl.createDocument(None, LIST_EL_NAME, None)
-                list_el = doc.documentElement
+                list_el = mark_list_node(doc.documentElement)
                 if((list_props is not None) and
                    (QUERY_OFFSET_PARAM in list_props)):
                     list_el.attributes[QUERY_OFFSET_PARAM] = (
@@ -2596,7 +2608,7 @@ class Dispatcher(webapp.RequestHandler):
         try:
             if is_list_type(models):
                 doc = impl.createDocument(None, LIST_EL_NAME, None)
-                list_el = doc.documentElement
+                list_el = mark_list_node(doc.documentElement)
 
                 for model in models:
                     append_child(list_el, KEY_PROPERTY_NAME,
