@@ -2650,6 +2650,7 @@ class Dispatcher(webapp.RequestHandler):
             else:
                 key = None
 
+        new_model = False
         if(key):
             key = db.Key(key.strip())
             if(given_key and (given_key != key)):
@@ -2669,10 +2670,11 @@ class Dispatcher(webapp.RequestHandler):
                 setattr(model, prop_name, prop_value)
 
         else:
+            new_model = True
             model = model_handler.create(props)
 
-        # check for model specific etag attribute
-        if(self.enable_etags and
+        # check for model specific etag attribute (ignore for new model)
+        if(self.enable_etags and (not new_model) and
            (model_el.attributes.get(ETAG_ATTR_NAME, None) is not None)):
             model.in_model_hash_ = str(
                 model_el.attributes[ETAG_ATTR_NAME].value)
