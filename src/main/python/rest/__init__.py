@@ -484,10 +484,17 @@ def xml_node_to_json(xml_node):
             else:
                 # if we have more than one of the same type, turn the children
                 # into a list
-                if(not isinstance(cur_child_json_node, types.ListType)):
+                if(not is_list_type(cur_child_json_node)):
                     cur_child_json_node = [cur_child_json_node]
                 cur_child_json_node.append(new_child_json_node)
             json_node[child_xml_node.nodeName] = cur_child_json_node
+
+        # simplify json output lists if desired
+        if(force_list and Dispatcher.simple_json_lists and
+           (len(json_node) == 1)):
+            item_list = json_node.get(ITEM_EL_NAME, None)
+            if item_list is not None:
+                json_node = item_list
 
         xml_attrs_to_json(xml_node, json_node)
 
@@ -528,7 +535,7 @@ def json_node_to_xml(xml_node, json_node):
     """Appends an xml node generated from the given json node to the given xml
     node."""
     doc = xml_node.ownerDocument
-    if(isinstance(json_node, (basestring, int, long, float, complex, bool))):
+    if(is_json_value_type(json_node)):
         xml_node.appendChild(doc.createTextNode(unicode(json_node)))
     else:
         for json_node_name, json_node_value in json_node.iteritems():
@@ -537,11 +544,26 @@ def json_node_to_xml(xml_node, json_node):
             elif(json_node_name == JSON_TEXT_KEY):
                 xml_node.appendChild(doc.createTextNode(json_node_value))
             else:
-                if(not isinstance(json_node_value, types.ListType)):
+                tmp_xml_node = xml_node
+                if(not is_list_type(json_node_value)):
                     json_node_value = [json_node_value]
+                elif(Dispatcher.simple_json_lists and
+                     (len(json_node_value) > 0) and
+                     (json_node_name != ITEM_EL_NAME) and
+                     is_json_value_type(json_node_value[0])):
+                    # convert "simple" list back to default list format
+                    tmp_xml_node = append_child(tmp_xml_node, json_node_name)
+                    json_node_name = ITEM_EL_NAME
+
                 for json_node_list_value in json_node_value:
-                    child_node = append_child(xml_node, json_node_name)
+                    child_node = append_child(tmp_xml_node, json_node_name)
                     json_node_to_xml(child_node, json_node_list_value)
+
+
+def is_json_value_type(obj):
+    """Returns True if the given obj is a simple json value type, False
+    otherwise."""
+    return isinstance(obj, (basestring, int, long, float, complex, bool))
 
 
 def is_list_type(obj):
@@ -1933,6 +1955,20 @@ class Dispatcher(webapp.RequestHandler):
                       honored.  if enabled, 'If-Match' will be checked on sets
                       and 'If-None-Match' will be checked on gets.
                       Defaults to False
+
+        simple_json_lists: whether or not json value lists should be
+                           simplified.  by default, the json output closely
+                           matches the xml output.  however, since json
+                           already has an array structure, the default value
+                           list output can be a bit cumbersone.  Enabling this
+                           feature removes the additional 'item' key from
+                           value lists.
+                           Defaults to False
+
+                           Default output:
+                             'some_list' : { 'item' : [a, b, c]}
+                           Simple output:
+                             'some_list' : [a, b, c]
     """
 
     caching = False
@@ -1952,6 +1988,7 @@ class Dispatcher(webapp.RequestHandler):
     enable_delete_all = False
     external_namespaces = HIDDEN_EXT_NAMESPACES
     enable_etags = False
+    simple_json_lists = False
 
     model_handlers = {}
 
