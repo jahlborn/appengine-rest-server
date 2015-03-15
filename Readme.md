@@ -39,4 +39,4 @@ The [Boomi Demo](http://boomi-demo.appspot.com/) App Engine application is a ful
 
 ## Setup ##
 
-Utilizing this library is extremely simple.  See the [Getting Started](wiki/Getting-Started) page to find out how to integrate the appengine rest server into your project.
+Utilizing this library is extremely simple.  See the [Getting Started](../../wiki/Getting-Started) page to find out how to integrate the appengine rest server into your project.
