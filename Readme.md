@@ -25,7 +25,7 @@ API with no extra work.
       * Return the entire updated models: `"?type=full"`
     * Delete instance: `"DELETE "/MyModel/<key"`
 
-Check out the [Features](../../wiki/Features) page for a more complete list of the features supported by the appengine rest server, including advanced features.
+Check out the [Features](../../blob/wiki/GettingStarted.md) page for a more complete list of the features supported by the appengine rest server, including advanced features.
 
 ## Example ##
 
